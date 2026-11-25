@@ -122,7 +122,7 @@ Run **Actions → Build kernel + boot.img → Run workflow**. Inputs:
 | `cmdline` | empty (workflow default) | boot.img command line |
 | `display` | `msm` | `splash`: no MSM display driver, the splash stays up (diagnostic) |
 | `usb_console` | off | kernel console on a USB serial gadget (diagnostic) |
-| `reboot_to_recovery` | off | save the log to the `debug` partition and restart into TWRP after 30/60/120 s (diagnostic) |
+| `reboot_to_recovery` | off | save the log to the `debug` partition and restart into TWRP after 30/60/120 s (diagnostic); also logs whether the panel's TE signal arrives (`gts6lwifi_diag.te_probe`) |
 | `display_test` | off | display bring-up (diagnostic): `drm_debug` (`drm.debug=0x02`), or one of the panel driver's bring-up switches (`panel_samsung_amsa05rb06.handover`, `.clock_noncontinuous`, `.stock_init`, see the driver) |
 
 The build also fails if an RPMh regulator in a DTB asks for a voltage its

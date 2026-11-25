@@ -35,6 +35,10 @@
  *   bound, and a few more. The top three bits are 101 (hex a or b), which
  *   keeps the alarm decades away.
  *
+ * - gts6lwifi_diag.te_probe=1 logs, a few times during the boot, whether
+ *   the display panel's tear effect (TE) signal reaches the display engine,
+ *   from the pingpong blocks' tear check counters (see te_probe_pp()).
+ *
  * Panics restart with a warm reset while the log buffer is in use, in case
  * that keeps memory.
  */
@@ -45,6 +49,7 @@
 #include <linux/bitfield.h>
 #include <linux/blkdev.h>
 #include <linux/console.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/hrtimer.h>
@@ -58,8 +63,10 @@
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/reboot.h>
 #include <linux/regmap.h>
 #include <linux/sizes.h>
@@ -582,6 +589,105 @@ static struct notifier_block save_log_nb = {
 	.priority = INT_MAX,
 };
 
+/*
+ * A command mode panel pulses TE once a frame, and each pulse resets the
+ * read pointer line counter of the pingpong block feeding it to the
+ * vertical display size (vsync_init_val). Without TE the counter runs on,
+ * at the rate of the configured refresh, up to sync_cfg_height (twice the
+ * frame) before it wraps, which also halves the frame rate. So a counter
+ * that goes past one frame's lines means no TE.
+ */
+static bool te_probe;
+module_param(te_probe, bool, 0444);
+MODULE_PARM_DESC(te_probe,
+		 "Log whether the display panel's TE signal reaches the display engine");
+
+#define DPU_PP_TEAR_CHECK_EN		0x000
+#define DPU_PP_SYNC_CONFIG_HEIGHT	0x008
+#define DPU_PP_VSYNC_INIT_VAL		0x010
+#define DPU_PP_INT_COUNT_VAL		0x014
+
+/* PINGPONG_0 and _1 (the two DSI links' halves) in SM8150's DPU */
+static const u32 te_probe_pp_offsets[] = { 0x70000, 0x70800 };
+static const unsigned int te_probe_at_s[] = { 3, 6, 12, 25, 45 };
+static unsigned int te_probe_step;
+static void __iomem *te_probe_mdp;
+
+static void te_probe_pp(unsigned int index)
+{
+	void __iomem *pp = te_probe_mdp + te_probe_pp_offsets[index];
+	u32 first, last, val, line, max_line = 0, min_line = U16_MAX;
+	unsigned int i, wraps = 0, prev = 0;
+	ktime_t start;
+	s64 us;
+
+	if (!readl(pp + DPU_PP_TEAR_CHECK_EN)) {
+		pr_info("te_probe: pp%u: tear check off\n", index);
+		return;
+	}
+
+	start = ktime_get();
+	first = readl(pp + DPU_PP_INT_COUNT_VAL);
+	for (i = 0; i < 2000; i++) {		/* 100 ms */
+		val = readl(pp + DPU_PP_INT_COUNT_VAL);
+		line = FIELD_GET(GENMASK(15, 0), val);
+		max_line = max(max_line, line);
+		min_line = min(min_line, line);
+		if (i && line < prev)
+			wraps++;
+		prev = line;
+		udelay(50);
+	}
+	last = readl(pp + DPU_PP_INT_COUNT_VAL);
+	us = ktime_us_delta(ktime_get(), start);
+
+	pr_info("te_probe: pp%u: %u frames and %u counter resets in %lld us; line counter %u..%u (init %u, height %u)\n",
+		index,
+		(u16)(FIELD_GET(GENMASK(31, 16), last) - FIELD_GET(GENMASK(31, 16), first)),
+		wraps, us, min_line, max_line,
+		(u32)FIELD_GET(GENMASK(15, 0), readl(pp + DPU_PP_VSYNC_INIT_VAL)),
+		(u32)FIELD_GET(GENMASK(15, 0), readl(pp + DPU_PP_SYNC_CONFIG_HEIGHT)));
+}
+
+static void te_probe_work_fn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(te_probe_work, te_probe_work_fn);
+
+static void te_probe_work_fn(struct work_struct *work)
+{
+	struct device_node *np;
+	struct platform_device *pdev;
+	unsigned int i;
+
+	np = of_find_compatible_node(NULL, NULL, "qcom,sm8150-dpu");
+	pdev = np ? of_find_device_by_node(np) : NULL;
+	if (!pdev || !device_is_bound(&pdev->dev)) {
+		pr_info("te_probe: no display engine\n");
+		goto next;
+	}
+
+	if (!te_probe_mdp)
+		te_probe_mdp = of_iomap(np, 0);
+
+	/* Its registers are only there while it is powered */
+	if (!te_probe_mdp || pm_runtime_get_if_active(&pdev->dev) <= 0) {
+		pr_info("te_probe: display engine not powered\n");
+		goto next;
+	}
+	for (i = 0; i < ARRAY_SIZE(te_probe_pp_offsets); i++)
+		te_probe_pp(i);
+	pm_runtime_put(&pdev->dev);
+
+next:
+	if (pdev)
+		put_device(&pdev->dev);
+	of_node_put(np);
+
+	if (++te_probe_step < ARRAY_SIZE(te_probe_at_s))
+		schedule_delayed_work(&te_probe_work,
+				      (te_probe_at_s[te_probe_step] -
+				       te_probe_at_s[te_probe_step - 1]) * HZ);
+}
+
 static int __init gts6lwifi_diag_init(void)
 {
 	sec_log_init();
@@ -597,6 +703,9 @@ static int __init gts6lwifi_diag_init(void)
 		pr_info("saving the log every %u s\n", save_every);
 		schedule_delayed_work(&save_work, (unsigned long)save_every * HZ);
 	}
+
+	if (te_probe)
+		schedule_delayed_work(&te_probe_work, te_probe_at_s[0] * HZ);
 
 	return 0;
 }

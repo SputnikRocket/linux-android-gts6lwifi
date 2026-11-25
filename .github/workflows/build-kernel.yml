@@ -391,7 +391,7 @@ jobs:
           esac
           # Diagnostic: save the whole log (debug partition, RAM log buffer), restart into TWRP
           if [ "$REBOOT_AFTER" != off ]; then
-            BOOT_CMDLINE="$BOOT_CMDLINE gts6lwifi_diag.reboot_after=$REBOOT_AFTER gts6lwifi_diag.save_every=15 log_buf_len=4M"
+            BOOT_CMDLINE="$BOOT_CMDLINE gts6lwifi_diag.reboot_after=$REBOOT_AFTER gts6lwifi_diag.save_every=15 gts6lwifi_diag.te_probe=1 log_buf_len=4M"
             case " $BOOT_CMDLINE " in *" ignore_loglevel "*) ;; *) BOOT_CMDLINE="$BOOT_CMDLINE ignore_loglevel" ;; esac
             echo "::notice title=Diagnostic build::reboot_to_recovery: restarts into recovery $REBOOT_AFTER s into the boot"
           fi

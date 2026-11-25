@@ -230,6 +230,13 @@ compile-tested.
   `-gts6lwifi` lines, the kernel did not find the partition: storage did not
   come up.
 
+  If even that finds no partition, the status word still gets through: at
+  the same restarts the kernel puts it in the PMIC's RTC alarm value, which
+  TWRP's kernel prints at boot (`dmesg | grep sapa_load_alarm`, the `pmic=`
+  value) and the bootloader too (`[SAPA] ALARM=` in `/proc/last_kmsg`). It
+  starts with hex `a`; the other bits say which devices have a driver bound
+  (`status_devices[]` and `STATUS_*` in `drivers/misc/gts6lwifi-diag.c`).
+
   The kernel also copies its log into Samsung's RAM log buffer (`sec_log=`
   on the bootloader's command line), shown in TWRP's `/proc/last_kmsg` if
   memory ever survives a reset; the end of that file also holds the

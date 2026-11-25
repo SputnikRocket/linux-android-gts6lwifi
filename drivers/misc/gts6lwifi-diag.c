@@ -25,6 +25,12 @@
  *   seconds into the boot, saving the log on the way. Getting to TWRP that
  *   way also shows that the kernel was still running.
  *
+ * - For when not even the log can be saved: at the same restarts, a status
+ *   word goes into the value of the PMIC's RTC alarm, which the bootloader
+ *   prints at the next boot ("[SAPA] ALARM=<decimal>", in TWRP's
+ *   /proc/last_kmsg): one bit per device below, set when it has a driver
+ *   bound. The top nibble is 0xa, which keeps the alarm decades away.
+ *
  * Panics restart with a warm reset while the log buffer is in use, in case
  * that keeps memory.
  */
@@ -37,6 +43,7 @@
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/hrtimer.h>
+#include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -51,6 +58,7 @@
 #include <linux/regmap.h>
 #include <linux/sizes.h>
 #include <linux/string.h>
+#include <linux/unaligned.h>
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
 
@@ -78,6 +86,9 @@ struct sec_log_buf {
 #define PON_SOFT_RB_SPARE	0x8f
 #define PON_REASON_MASK		GENMASK(7, 1)
 #define PON_REASON_RECOVERY	0x1
+
+/* RTC alarm value, 4 bytes little endian (rtc-pm8xxx.c, pm8941_regs) */
+#define RTC_ALARM_RW		0x140
 
 static phys_addr_t sec_log_base __initdata;
 static unsigned long long sec_log_size __initdata;
@@ -189,36 +200,41 @@ module_param(reboot_after, uint, 0444);
 MODULE_PARM_DESC(reboot_after,
 		 "Restart into recovery this many seconds into the boot, saving the log on the way (0: never)");
 
+/* The regmap and base address of the first PMIC peripheral with @compat */
+static struct regmap *pmic_peripheral(const char *compat, u32 *base)
+{
+	struct platform_device *pdev;
+	struct device_node *np;
+	struct regmap *regmap = NULL;
+
+	np = of_find_compatible_node(NULL, NULL, compat);
+	if (!np)
+		return NULL;
+
+	pdev = of_find_device_by_node(np);
+	if (pdev && pdev->dev.parent && !of_property_read_u32(np, "reg", base))
+		regmap = dev_get_regmap(pdev->dev.parent, NULL);
+	of_node_put(np);
+	if (pdev)
+		put_device(&pdev->dev);
+
+	return regmap;
+}
+
 /*
  * Ask the bootloader for recovery now, the way qcom-pon.c does at a restart,
  * so that even a forced reset (below) ends up in TWRP.
  */
 static void set_recovery_reason(void)
 {
-	struct platform_device *pdev;
-	struct device_node *np;
 	struct regmap *regmap;
 	u32 base;
 	int ret;
 
-	np = of_find_compatible_node(NULL, NULL, "qcom,pm8998-pon");
-	if (!np) {
-		pr_err("no PON node, cannot ask for recovery\n");
-		return;
-	}
-
-	ret = of_property_read_u32(np, "reg", &base);
-	pdev = of_find_device_by_node(np);
-	of_node_put(np);
-	if (ret || !pdev) {
-		pr_err("PON device not found (%d), cannot ask for recovery\n", ret);
-		goto out;
-	}
-
-	regmap = pdev->dev.parent ? dev_get_regmap(pdev->dev.parent, NULL) : NULL;
+	regmap = pmic_peripheral("qcom,pm8998-pon", &base);
 	if (!regmap) {
-		pr_err("no PMIC regmap, cannot ask for recovery\n");
-		goto out;
+		pr_err("no PON device, cannot ask for recovery\n");
+		return;
 	}
 
 	ret = regmap_update_bits(regmap, base + PON_SOFT_RB_SPARE, PON_REASON_MASK,
@@ -227,9 +243,6 @@ static void set_recovery_reason(void)
 		pr_err("cannot write the PON restart reason: %d\n", ret);
 	else
 		pr_info("restart reason set to recovery\n");
-out:
-	if (pdev)
-		put_device(&pdev->dev);
 }
 
 static int match_debug_partition(struct device *dev, const void *data)
@@ -240,9 +253,16 @@ static int match_debug_partition(struct device *dev, const void *data)
 	       !strcmp(bdev->bd_meta_info->volname, DEBUG_PART_NAME);
 }
 
+enum save_result {
+	SAVE_NO_PARTITION,
+	SAVE_FAILED,
+	SAVE_DONE,
+};
+
 /* Write the kernel log to Samsung's debug partition */
-static void save_log_to_debug_partition(void)
+static enum save_result save_log_to_debug_partition(void)
 {
+	enum save_result result = SAVE_FAILED;
 	struct kmsg_dump_iter iter;
 	struct sec_log_buf *klog;
 	struct file *file;
@@ -256,7 +276,7 @@ static void save_log_to_debug_partition(void)
 	if (!dev) {
 		pr_err("no \"%s\" partition: storage did not come up, log not saved\n",
 		       DEBUG_PART_NAME);
-		return;
+		return SAVE_NO_PARTITION;
 	}
 
 	if (bdev_nr_bytes(dev_to_bdev(dev)) <
@@ -295,12 +315,147 @@ static void save_log_to_debug_partition(void)
 	if (written != DEBUG_PART_KLOG_SIZE || ret)
 		pr_err("writing the log to %s failed: %zd, %d\n", dev_name(dev),
 		       written, ret);
-	else
+	else {
 		pr_info("saved %zu bytes of kernel log\n", len);
+		result = SAVE_DONE;
+	}
 out_free:
 	vfree(klog);
 out_dev:
 	put_device(dev);
+
+	return result;
+}
+
+/* Status bits: devices, by compatible, that should have a driver bound */
+static const char * const status_devices[] = {
+	"qcom,cmd-db",				/*  0 */
+	"qcom,rpmh-rsc",			/*  1 */
+	"qcom,sm8150-rpmh-clk",			/*  2 */
+	"qcom,sm8150-rpmhpd",			/*  3 */
+	"qcom,pm8150-rpmh-regulators",		/*  4 */
+	"qcom,pm8150l-rpmh-regulators",		/*  5 */
+	"qcom,gcc-sm8150",			/*  6 */
+	"qcom,sm8150-aggre1-noc",		/*  7 */
+	"qcom,sm8150-mc-virt",			/*  8 */
+	"qcom,sm8150-gem-noc",			/*  9 */
+	"qcom,sm8150-smmu-500",			/* 10 */
+	"qcom,sm8150-pinctrl",			/* 11 */
+	"qcom,sm8150-aoss-qmp",			/* 12 */
+	"qcom,sm8150-qmp-ufs-phy",		/* 13 */
+	"qcom,sm8150-ufshc",			/* 14 */
+	"qcom,sm8150-usb-hs-phy",		/* 15 */
+	"qcom,sm8150-dwc3",			/* 16 */
+	"snps,dwc3",				/* 17 */
+	"qcom,sm8150-dispcc",			/* 18 */
+	"qcom,sm8150-mdss",			/* 19 */
+	"qcom,sm8150-dpu",			/* 20 */
+	"qcom,sm8150-dsi-ctrl",			/* 21 */
+	"qcom,sm8150-sdhci",			/* 22 */
+};
+
+#define STATUS_MUIC		BIT(23)	/* SM5705 MUIC (I2C) bound */
+#define STATUS_DISK		BIT(24)	/* an sd* disk (UFS LUN) exists */
+#define STATUS_PARTITION	BIT(25)	/* the debug partition exists */
+#define STATUS_SAVED		BIT(26)	/* the log was saved there */
+#define STATUS_RUNNING		BIT(27)	/* init is running: root was mounted */
+#define STATUS_MAGIC		(0xaU << 28)
+
+static bool compatible_bound(const char *compat)
+{
+	struct platform_device *pdev;
+	struct device_node *np;
+	bool bound = false;
+
+	np = of_find_compatible_node(NULL, NULL, compat);
+	if (!np)
+		return false;
+
+	pdev = of_find_device_by_node(np);
+	of_node_put(np);
+	if (pdev) {
+		bound = device_is_bound(&pdev->dev);
+		put_device(&pdev->dev);
+	}
+
+	return bound;
+}
+
+static bool muic_bound(void)
+{
+	struct i2c_client *client;
+	struct device_node *np;
+	bool bound = false;
+
+	np = of_find_compatible_node(NULL, NULL, "siliconmitus,sm5705-muic");
+	if (!np)
+		return false;
+
+	client = of_find_i2c_device_by_node(np);
+	of_node_put(np);
+	if (client) {
+		bound = device_is_bound(&client->dev);
+		put_device(&client->dev);
+	}
+
+	return bound;
+}
+
+static int match_sd_disk(struct device *dev, const void *data)
+{
+	return !bdev_is_partition(dev_to_bdev(dev)) &&
+	       !strncmp(dev_name(dev), "sd", 2);
+}
+
+static u32 boot_status(enum save_result saved)
+{
+	struct device *disk;
+	u32 status = STATUS_MAGIC;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(status_devices); i++)
+		if (compatible_bound(status_devices[i]))
+			status |= BIT(i);
+
+	if (muic_bound())
+		status |= STATUS_MUIC;
+
+	disk = class_find_device(&block_class, NULL, NULL, match_sd_disk);
+	if (disk) {
+		status |= STATUS_DISK;
+		put_device(disk);
+	}
+
+	if (saved != SAVE_NO_PARTITION)
+		status |= STATUS_PARTITION;
+	if (saved == SAVE_DONE)
+		status |= STATUS_SAVED;
+	if (system_state == SYSTEM_RUNNING)
+		status |= STATUS_RUNNING;
+
+	return status;
+}
+
+/* Leave @status in the RTC alarm value, which the bootloader prints */
+static void report_status(u32 status)
+{
+	struct regmap *regmap;
+	u8 val[4];
+	u32 base;
+	int ret;
+
+	pr_info("boot status %#010x\n", status);
+
+	regmap = pmic_peripheral("qcom,pm8941-rtc", &base);
+	if (!regmap) {
+		pr_err("no RTC device, cannot report the status\n");
+		return;
+	}
+
+	put_unaligned_le32(status, val);
+	ret = regmap_bulk_write(regmap, base + RTC_ALARM_RW, val, sizeof(val));
+	if (ret)
+		pr_err("cannot write the RTC alarm: %d\n", ret);
 }
 
 #define REBOOT_FALLBACK_SEC	45
@@ -339,10 +494,13 @@ static DECLARE_DELAYED_WORK(reboot_work, reboot_work_fn);
 static int save_log_notify(struct notifier_block *nb, unsigned long action,
 			   void *data)
 {
+	enum save_result saved;
+
 	pr_info("%s (%s): saving the kernel log\n",
 		action == SYS_RESTART ? "restart" : "power off",
 		data ? (char *)data : "");
-	save_log_to_debug_partition();
+	saved = save_log_to_debug_partition();
+	report_status(boot_status(saved));
 
 	return NOTIFY_DONE;
 }

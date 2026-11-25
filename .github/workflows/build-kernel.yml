@@ -38,14 +38,24 @@ on:
         description: "Kernel console over USB (CDC ACM serial gadget, console=ttyGS0): read the boot log from a PC without a working screen. Android's own USB (adb, MTP) does not work in such a build: a diagnostic build."
         type: boolean
         default: false
+      reboot_to_recovery:
+        description: "Restart into recovery (TWRP) with a warm reset this many seconds into the boot, so that boot's kernel log can be read there in /proc/last_kmsg (off = never): a diagnostic build."
+        type: choice
+        options:
+          - "off"
+          - "30"
+          - "60"
+          - "120"
+        default: "off"
 
 permissions:
   contents: read
 
 # A new run replaces an older one of the same variant on the same branch;
-# different variants (display, usb_console) build side by side.
+# different variants (display, usb_console, reboot_to_recovery) build side
+# by side.
 concurrency:
-  group: kernel-${{ github.ref }}-${{ inputs.display || 'msm' }}-${{ inputs.usb_console && 'usbcon' || 'plain' }}
+  group: kernel-${{ github.ref }}-${{ inputs.display || 'msm' }}-${{ inputs.usb_console && 'usbcon' || 'plain' }}-${{ inputs.reboot_to_recovery || 'off' }}
   cancel-in-progress: true
 
 env:
@@ -94,7 +104,8 @@ jobs:
       DISPLAY_MODE: ${{ inputs.display || 'msm' }}
       # Appended to artifact names, so diagnostic builds can't be mistaken for normal ones
       USB_CONSOLE: ${{ inputs.usb_console && 'true' || 'false' }}
-      VARIANT: ${{ inputs.display == 'splash' && '-splash' || '' }}${{ inputs.usb_console && '-usbcon' || '' }}
+      REBOOT_AFTER: ${{ inputs.reboot_to_recovery || 'off' }}
+      VARIANT: ${{ inputs.display == 'splash' && '-splash' || '' }}${{ inputs.usb_console && '-usbcon' || '' }}${{ (inputs.reboot_to_recovery && inputs.reboot_to_recovery != 'off') && format('-reboot{0}', inputs.reboot_to_recovery) || '' }}
 
     steps:
       - name: Checkout kernel source
@@ -354,6 +365,12 @@ jobs:
           if [ "$USB_CONSOLE" = true ]; then
             BOOT_CMDLINE="$BOOT_CMDLINE console=ttyGS0,115200 ignore_loglevel"
           fi
+          # Diagnostic: the whole log into the RAM log buffer, then a warm restart to TWRP
+          if [ "$REBOOT_AFTER" != off ]; then
+            BOOT_CMDLINE="$BOOT_CMDLINE gts6lwifi_diag.reboot_after=$REBOOT_AFTER"
+            case " $BOOT_CMDLINE " in *" ignore_loglevel "*) ;; *) BOOT_CMDLINE="$BOOT_CMDLINE ignore_loglevel" ;; esac
+            echo "::notice title=Diagnostic build::reboot_to_recovery: restarts into recovery $REBOOT_AFTER s into the boot"
+          fi
           dtbo=""
           [ -z "${DTBO_NAME:-}" ] || dtbo="$B/dts/$DTBO_NAME.dtbo"
 
@@ -488,6 +505,7 @@ jobs:
             echo "| DTBs | ${DTB_NAMES} |"
             echo "| USB console | ${USB_CONSOLE}$([ "$USB_CONSOLE" = true ] && echo ' (diagnostic: kernel log on the USB serial gadget, no adb)') |"
             echo "| Display | ${DISPLAY_MODE}$([ "$DISPLAY_MODE" = splash ] && echo ' (diagnostic: bootloader splash + kernel log, no MSM display driver)') |"
+            echo "| Restart to recovery | ${REBOOT_AFTER}$([ "$REBOOT_AFTER" != off ] && echo " s into the boot (diagnostic: read the log in TWRP, /proc/last_kmsg)") |"
             echo
             echo "Flash \`boot.img\` **and** \`dtbo.img\` together on an unlocked bootloader with a vbmeta that has"
             echo "verification disabled; see README.gts6lwifi.md:"

@@ -29,6 +29,7 @@ The first commit is an unmodified snapshot of
 | `Input: add STMicroelectronics FTS1BA90A` (+ binding) | driver for the touchscreen |
 | `...: Enable the panel and touchscreen` | DSI/panel/touch nodes in the DT, plus the matching config |
 | `extcon: Add Silicon Mitus SM5705 MUIC` (+ binding) | connects the USB D+/D- lines, which the stock kernel leaves disconnected; the DT node and config follow |
+| `ANDROID: misc: Add gts6lwifi boot diagnostics` | kernel log in Samsung's RAM log buffer (`/proc/last_kmsg` in TWRP), optional timed restart into recovery |
 | `.github/workflows/build-kernel.yml` | builds `Image`, modules, `boot.img`, `dtbo.img` and an Odin tar |
 
 ### Hardware support
@@ -196,9 +197,25 @@ compile-tested.
   USB only works once the SM5705 MUIC driver has connected D+/D- (see
   `extcon-sm5705.c`): the stock kernel disconnects them at shutdown.
 
-* **Last kernel log after a failed boot**. ramoops uses the same region and
-  record layout as the stock kernel. Boot TWRP (or stock) right after a failed
-  mainline boot and read `/sys/fs/pstore/console-ramoops-0`.
+* **Last kernel log after a failed boot**. The kernel copies its log into
+  Samsung's log buffer in reserved memory (`sec_log=` on the bootloader's
+  command line, `drivers/misc/gts6lwifi-diag.c`), in the format of Samsung's
+  kernels, so TWRP and stock show it in `/proc/last_kmsg` after a reset that
+  keeps memory. It comes after the logs of earlier boots: look for the last
+  `Linux version ...-gts6lwifi`. ramoops also uses the same region and record
+  layout as the stock kernel (`/sys/fs/pstore/console-ramoops-0`).
+
+  Holding Power + Volume Down is a hard reset (`qcom,s2-type` in the stock
+  DT), which most likely loses memory, and the log with it. Build with the workflow's `reboot_to_recovery` option instead: the
+  kernel restarts into recovery with a warm reset that many seconds into the
+  boot (`gts6lwifi_diag.reboot_after=<seconds>`, falling back to a forced
+  reset if the orderly one hangs), and panics restart with a warm reset too.
+  Getting to TWRP on its own also shows the kernel was still running. Then,
+  in TWRP's terminal or over adb:
+
+  ```bash
+  cat /proc/last_kmsg > /sdcard/last_kmsg.txt; cp -r /sys/fs/pstore /sdcard/pstore
+  ```
 * **Framebuffer console**. `console=tty0` puts the kernel log on the boot
   splash, if the bootloader left the panel running.
 * **Serial**. `ttyMSM0` on GPIO 85/86, 115200n8.

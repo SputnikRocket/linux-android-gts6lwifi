@@ -53,9 +53,11 @@
 	chassis-type = "tablet";
 
 	/*
-	 * Samsung's bootloader picks the appended DTB by SoC and board ID.
-	 * The stock base DTBs use board-id <0 0>, which it treats as
-	 * matching any board.
+	 * With a valid dtbo partition, Samsung's bootloader picks the
+	 * appended DTB by SoC ID alone and accepts board-id <0 0> as a
+	 * default, as on Samsung's own base DTBs. The board is matched
+	 * against the dtbo partition instead; see
+	 * sm8150-samsung-gts6lwifi-dtbo.dtso.
 	 */
 	qcom,msm-id = <QCOM_ID_SM8150 0x20000>;
 	qcom,board-id = <0 0>;
@@ -73,9 +75,10 @@
 		stdout-path = "serial0:115200n8";
 
 		/*
-		 * The bootloader leaves the panel running from this buffer
-		 * (cont_splash_mem) in auto-refresh mode. The panel is driven
-		 * as two 1280x1600 halves over DSI0 and DSI1.
+		 * The bootloader's splash buffer (cont_splash_mem). The panel
+		 * is a command-mode panel driven as two 1280x1600 halves over
+		 * DSI0 and DSI1, so updates only show if the bootloader leaves
+		 * the display engine in auto-refresh.
 		 */
 		framebuffer: framebuffer@9c400000 {
 			compatible = "simple-framebuffer";

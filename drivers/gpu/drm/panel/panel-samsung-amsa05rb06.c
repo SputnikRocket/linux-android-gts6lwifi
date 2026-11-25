@@ -78,14 +78,22 @@ module_param(stock_init, bool, 0444);
 MODULE_PARM_DESC(stock_init,
 		 "Initialise the panel with the stock command list byte for byte: AOR for 360 nits, no tear effect command");
 
-static bool status_log = true;
+/*
+ * Reading the panel goes through a bus turnaround, which the MSM DSI host
+ * does not keep clear of command mode frames, and the first modeset runs
+ * inside this driver's probe (from mipi_dsi_attach()). So read once right
+ * after Display On, before the first frame, and the rest only seconds
+ * later. Off by default: a read that went wrong there once kept the probe
+ * from finishing, and storage and USB from probing after it.
+ */
+static bool status_log;
 module_param(status_log, bool, 0444);
 MODULE_PARM_DESC(status_log,
 		 "Log the panel's own view (power mode, DSI errors, error flag) for 30 s after it is switched on");
 
-/* When to read the panel's status, in ms after Display On */
+/* When to read the panel's status again, in ms after Display On */
 static const unsigned int amsa05rb06_status_ms[] = {
-	20, 200, 500, 1000, 2000, 5000, 10000, 30000,
+	5000, 10000, 20000, 30000,
 };
 
 struct amsa05rb06 {
@@ -262,19 +270,9 @@ static int amsa05rb06_read_reg(struct mipi_dsi_device *dsi, u8 cmd)
  * error count is of packets the panel received with ECC or CRC errors
  * (bit 7: overflow). The error flag is the panel's ESD detect output.
  */
-static void amsa05rb06_status_work(struct work_struct *work)
+static void amsa05rb06_status_log(struct amsa05rb06 *ctx)
 {
-	struct amsa05rb06 *ctx = container_of(to_delayed_work(work),
-					      struct amsa05rb06, status_work);
 	struct mipi_dsi_device *dsi = ctx->dsi[0];
-	unsigned int next;
-	s64 now;
-
-	if (ctx->status_step == 0)
-		dev_info(&dsi->dev, "status: IDs %d %d %d\n",
-			 amsa05rb06_read_reg(dsi, 0xda),
-			 amsa05rb06_read_reg(dsi, 0xdb),
-			 amsa05rb06_read_reg(dsi, 0xdc));
 
 	dev_info(&dsi->dev,
 		 "status at %lld ms: power mode %d, signal mode %d, DSI errors %d, diagnostic %d, TCON_RDY %d, error flag %d\n",
@@ -287,6 +285,16 @@ static void amsa05rb06_status_work(struct work_struct *work)
 			gpiod_get_value_cansleep(ctx->tcon_rdy_gpio) : -ENOENT,
 		 ctx->err_fg_gpio ?
 			gpiod_get_value_cansleep(ctx->err_fg_gpio) : -ENOENT);
+}
+
+static void amsa05rb06_status_work(struct work_struct *work)
+{
+	struct amsa05rb06 *ctx = container_of(to_delayed_work(work),
+					      struct amsa05rb06, status_work);
+	unsigned int next;
+	s64 now;
+
+	amsa05rb06_status_log(ctx);
 
 	if (++ctx->status_step >= ARRAY_SIZE(amsa05rb06_status_ms))
 		return;
@@ -297,13 +305,23 @@ static void amsa05rb06_status_work(struct work_struct *work)
 			      msecs_to_jiffies(next > now ? next - now : 0));
 }
 
+/* Called from .enable, right after Display On and before the first frame */
 static void amsa05rb06_status_start(struct amsa05rb06 *ctx)
 {
+	struct mipi_dsi_device *dsi = ctx->dsi[0];
+
 	if (!status_log)
 		return;
 
 	ctx->display_on = ktime_get();
 	ctx->status_step = 0;
+
+	dev_info(&dsi->dev, "status: IDs %d %d %d\n",
+		 amsa05rb06_read_reg(dsi, 0xda),
+		 amsa05rb06_read_reg(dsi, 0xdb),
+		 amsa05rb06_read_reg(dsi, 0xdc));
+	amsa05rb06_status_log(ctx);
+
 	schedule_delayed_work(&ctx->status_work,
 			      msecs_to_jiffies(amsa05rb06_status_ms[0]));
 }

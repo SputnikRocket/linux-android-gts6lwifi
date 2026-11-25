@@ -101,7 +101,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex build-essential libssl-dev libelf-dev libdw-dev libncurses-dev zlib1g-dev \
-            cmake cpio kmod xz-utils zstd lz4 unzip curl git ca-certificates python3 ccache
+            cmake cpio kmod xz-utils zstd lz4 zip unzip curl git ca-certificates python3 ccache
 
       - name: Resolve toolchain version
         run: |
@@ -417,6 +417,29 @@ jobs:
           ls -l
           sha256sum -- *.img *.tar | tee SHA256SUMS
 
+      # The TWRP zip is uploaded unpacked: GitHub zips an artifact for download,
+      # so the downloaded artifact *is* the flashable zip (META-INF/ at its root).
+      # The installer is .github/twrp/update-binary.
+      - name: Build TWRP flashable zip
+        run: |
+          set -euo pipefail
+          if [ ! -f dist/boot/dtbo.img ]; then
+            echo "::warning::no dtbo.img (dtbo_name is empty), so no TWRP zip: the installer flashes boot and dtbo together"
+            exit 0
+          fi
+          z=dist/twrp
+          mkdir -p "$z/META-INF/com/google/android"
+          cp .github/twrp/update-binary .github/twrp/updater-script "$z/META-INF/com/google/android/"
+          cp dist/boot/boot.img dist/boot/dtbo.img "$z/"
+          (cd "$z" && sha256sum boot.img dtbo.img > SHA256SUMS)
+          find "$z" -type f | sort
+          # Check it the way TWRP will use it: zip it, then unpack the installer and images
+          (cd "$z" && zip -qr "$RUNNER_TEMP/twrp-check.zip" .)
+          unzip -l "$RUNNER_TEMP/twrp-check.zip"
+          unzip -q -o "$RUNNER_TEMP/twrp-check.zip" META-INF/com/google/android/update-binary boot.img dtbo.img SHA256SUMS -d "$RUNNER_TEMP/twrp-check"
+          (cd "$RUNNER_TEMP/twrp-check" && sha256sum -c SHA256SUMS)
+          sh -n "$RUNNER_TEMP/twrp-check/META-INF/com/google/android/update-binary"
+
       - name: Job summary
         if: success()
         run: |
@@ -431,11 +454,15 @@ jobs:
             echo "| boot.img | $(stat -c %s dist/boot/boot.img) of $BOOT_PARTITION_SIZE bytes |"
             echo "| DTBs | ${DTB_NAMES} |"
             echo
-            echo "Flash \`boot.img\` **and** \`dtbo.img\` together (Odin AP: \`gts6lwifi-mainline-odin.tar\`) on an unlocked"
-            echo "bootloader with a vbmeta that has verification disabled; see README.gts6lwifi.md."
+            echo "Flash \`boot.img\` **and** \`dtbo.img\` together on an unlocked bootloader with a vbmeta that has"
+            echo "verification disabled; see README.gts6lwifi.md:"
+            echo
+            echo "- **TWRP**: download \`gts6lwifi-mainline-twrp-${GITHUB_RUN_NUMBER}\` and flash the downloaded .zip as it is"
+            echo "  (Install > select zip). It backs up the current boot and dtbo to \`/sdcard/gts6lwifi-mainline-backup/\`."
+            echo "- **Odin**: \`gts6lwifi-mainline-odin.tar\` from the boot-img artifact, in the AP slot."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Three separate artifacts: kernel (Image/DTBs/config/log), modules, boot images
+      # Separate artifacts: kernel (Image/DTBs/config/log), modules, boot images, TWRP zip
       - name: Upload kernel artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -460,4 +487,13 @@ jobs:
         with:
           name: gts6lwifi-mainline-boot-img-${{ github.run_number }}
           path: dist/boot/
+          retention-days: 30
+
+      # Uploaded unpacked, so the artifact download is the flashable zip itself
+      - name: Upload TWRP flashable zip artifact
+        if: always() && hashFiles('dist/twrp/META-INF/com/google/android/update-binary') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: gts6lwifi-mainline-twrp-${{ github.run_number }}
+          path: dist/twrp/
           retention-days: 30

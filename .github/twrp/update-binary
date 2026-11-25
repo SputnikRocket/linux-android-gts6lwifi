@@ -1,0 +1,150 @@
+#!/sbin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# TWRP installer for the gts6lwifi (Galaxy Tab S6 Wi-Fi, SM-T860)
+# android-mainline kernel: flashes boot.img and dtbo.img.
+#
+# TWRP runs this as: update-binary <api version> <output fd> <zip path>
+#
+# The current boot and dtbo partitions are copied to
+# /sdcard/gts6lwifi-mainline-backup/<date>/ first, when /sdcard is writable,
+# so the previous kernel can be restored from TWRP (Install > Install Image).
+
+OUTFD=$2
+ZIPFILE=$3
+
+# Overridable for testing
+WORK=${GTS6_WORK:-/tmp/gts6lwifi-mainline}
+BLOCK_DIRS=${GTS6_BLOCK_DIRS:-"/dev/block/by-name /dev/block/bootdevice/by-name /dev/block/platform/soc/1d84000.ufshc/by-name"}
+BACKUP_ROOT=${GTS6_BACKUP_ROOT:-/sdcard/gts6lwifi-mainline-backup}
+
+ui_print() {
+	if [ -n "$OUTFD" ] && [ -e "/proc/self/fd/$OUTFD" ]; then
+		printf 'ui_print %s\nui_print\n' "$1" >> "/proc/self/fd/$OUTFD"
+	else
+		echo "$1"
+	fi
+}
+
+FLASHED=none
+
+abort() {
+	ui_print "ERROR: $1"
+	if [ "$FLASHED" = none ]; then
+		ui_print "Nothing was flashed."
+	else
+		ui_print "Already flashed: $FLASHED. Restore the backup or the"
+		ui_print "stock boot.img and dtbo.img before rebooting."
+	fi
+	rm -rf "$WORK"
+	exit 1
+}
+
+find_partition() {
+	for dir in $BLOCK_DIRS; do
+		if [ -e "$dir/$1" ]; then
+			echo "$dir/$1"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Size in bytes of a block device (or of a regular file, for testing)
+partition_size() {
+	if [ -b "$1" ]; then
+		blockdev --getsize64 "$1" 2>/dev/null && return 0
+		dev=$(basename "$(readlink -f "$1")")
+		echo $(( $(cat "/sys/class/block/$dev/size") * 512 ))
+	else
+		wc -c < "$1"
+	fi
+}
+
+file_size() {
+	wc -c < "$1" | tr -d ' '
+}
+
+ui_print "-----------------------------------------------"
+ui_print " android-mainline kernel for gts6lwifi (SM-T860)"
+ui_print "-----------------------------------------------"
+
+# ---- right device? Samsung's bootloader reports e.g. T860XXS5DWH1 ----
+bootloader=$(getprop ro.boot.bootloader)
+device=$(getprop ro.product.device)
+case "$bootloader:$device" in
+	T860*:*|*:gts6lwifi) ;;
+	*) abort "this is not a Galaxy Tab S6 Wi-Fi (SM-T860): bootloader '$bootloader', device '$device'" ;;
+esac
+ui_print "Device: ${device:-unknown}, bootloader ${bootloader:-unknown}"
+
+# ---- unpack and check the images ----
+rm -rf "$WORK"
+mkdir -p "$WORK" || abort "cannot create $WORK"
+unzip -o "$ZIPFILE" boot.img dtbo.img SHA256SUMS -d "$WORK" >/dev/null 2>&1
+for img in boot.img dtbo.img; do
+	[ -s "$WORK/$img" ] || abort "$img is missing from the zip"
+done
+
+if [ -f "$WORK/SHA256SUMS" ] && command -v sha256sum >/dev/null 2>&1; then
+	(cd "$WORK" && sha256sum -c SHA256SUMS >/dev/null 2>&1) ||
+		abort "checksum mismatch: the zip is damaged, download it again"
+	ui_print "Checksums OK"
+fi
+
+[ "$(dd if="$WORK/boot.img" bs=8 count=1 2>/dev/null)" = "ANDROID!" ] ||
+	abort "boot.img is not an Android boot image"
+
+# ---- find the partitions and check that the images fit ----
+BOOT=$(find_partition boot) || abort "boot partition not found"
+DTBO=$(find_partition dtbo) || abort "dtbo partition not found"
+
+for pair in "boot.img:$BOOT" "dtbo.img:$DTBO"; do
+	img=${pair%%:*}
+	part=${pair#*:}
+	need=$(file_size "$WORK/$img")
+	have=$(partition_size "$part") || abort "cannot read the size of $part"
+	[ "$need" -le "$have" ] || abort "$img ($need bytes) does not fit in $part ($have bytes)"
+done
+
+# ---- vbmeta: the kernel only mounts system with verification disabled ----
+VBMETA=$(find_partition vbmeta)
+if [ -n "$VBMETA" ] && [ "$(dd if="$VBMETA" bs=4 count=1 2>/dev/null)" = "AVB0" ]; then
+	# flags: big-endian u32 at offset 120; bit 1 = verification disabled
+	flags=$(dd if="$VBMETA" bs=1 skip=123 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+	if [ -n "$flags" ] && [ $(( flags & 2 )) -eq 0 ]; then
+		ui_print "WARNING: vbmeta has verification enabled. This kernel"
+		ui_print "will not mount system until you flash a vbmeta with"
+		ui_print "verification disabled (see README.gts6lwifi.md)."
+	fi
+fi
+
+# ---- back up the current images ----
+if mkdir -p "$BACKUP_ROOT" 2>/dev/null && [ -w "$BACKUP_ROOT" ]; then
+	backup="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
+	if ! { mkdir -p "$backup" &&
+	       dd if="$BOOT" of="$backup/boot.img" bs=1048576 2>/dev/null &&
+	       dd if="$DTBO" of="$backup/dtbo.img" bs=1048576 2>/dev/null; }; then
+		abort "backup to $backup failed"
+	fi
+	ui_print "Backed up boot and dtbo to $backup"
+else
+	ui_print "WARNING: /sdcard is not writable, no backup made."
+	ui_print "Restore the stock boot.img and dtbo.img with Odin if needed."
+fi
+
+# ---- flash ----
+ui_print "Flashing boot..."
+FLASHED="boot (possibly partially)"
+dd if="$WORK/boot.img" of="$BOOT" bs=1048576 2>/dev/null ||
+	abort "writing $BOOT failed"
+FLASHED=boot
+ui_print "Flashing dtbo..."
+dd if="$WORK/dtbo.img" of="$DTBO" bs=1048576 2>/dev/null ||
+	abort "writing $DTBO failed"
+FLASHED="boot and dtbo"
+sync
+
+rm -rf "$WORK"
+ui_print "Done. Reboot to system to boot the mainline kernel."
+exit 0

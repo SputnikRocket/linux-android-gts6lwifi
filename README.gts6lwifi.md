@@ -80,10 +80,19 @@ sources (`QcomModulePkg/Library/BootLib`):
 
 1. The bootloader must be unlocked (OEM unlock), as for any custom kernel.
 2. Flash a vbmeta with verification disabled (see above).
-3. Flash `gts6lwifi-mainline-odin.tar` in Odin's **AP** slot. It contains
-   `boot.img` and `dtbo.img`. TWRP can flash the two images instead.
-4. To go back, flash the stock `boot.img` **and** `dtbo.img` from your
-   firmware's AP tar.
+3. Flash the kernel, either way:
+   * **TWRP**: download the `gts6lwifi-mainline-twrp-<run>` artifact and flash
+     the downloaded `.zip` as it is (Install, then select the zip). Don't unpack
+     it: the artifact *is* the flashable zip. The installer checks that the
+     device is an SM-T860, verifies the images' checksums, and checks that
+     they fit. It then copies the current `boot` and `dtbo` partitions to
+     `/sdcard/gts6lwifi-mainline-backup/<date>/` and flashes `boot.img` and
+     `dtbo.img`. It also warns if vbmeta still has verification enabled.
+     Leave TWRP's zip signature verification off, since the zip is unsigned.
+   * **Odin**: flash `gts6lwifi-mainline-odin.tar` from the `boot-img`
+     artifact in the **AP** slot. It contains `boot.img` and `dtbo.img`.
+4. To go back, flash the backed-up (or stock) `boot.img` **and** `dtbo.img`,
+   for example from TWRP with Install > Install Image.
 
 Samsung's Android 12 vendor partition is built for its 4.14 kernel. Its HALs
 need downstream drivers (kgsl, sde, ion, qseecom, ...) that mainline does not
@@ -109,7 +118,9 @@ The toolchain is the AOSP clang that this ACK branch pins (`CLANG_VERSION` in
 `bazel/constants.scl`). It comes from `prebuilts/clang/host/linux-x86` on the
 `main-kernel` branch, as in ACK's own manifest, and is cached between runs.
 Artifacts: `kernel` (Image, Image-dtb, DTBs, config, System.map, build log),
-`modules`, and `boot-img` (boot.img, dtbo.img, Odin tar, SHA256SUMS).
+`modules`, `boot-img` (boot.img, dtbo.img, Odin tar, SHA256SUMS), and `twrp`.
+The `twrp` artifact is uploaded unpacked, so the zip GitHub serves for download
+is the TWRP flashable zip itself. Its installer is `.github/twrp/update-binary`.
 
 ### Locally
 

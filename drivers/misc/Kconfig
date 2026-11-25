@@ -390,6 +390,19 @@ config LATTICE_ECP3_CONFIG
 
 	  If unsure, say N.
 
+config GTS6LWIFI_DIAG
+	bool "Samsung Galaxy Tab S6 (gts6lwifi) boot diagnostics"
+	depends on ARM64 && PRINTK
+	help
+	  Keep the kernel log in Samsung's log buffer in reserved memory,
+	  where the next Samsung kernel (stock Android, or TWRP) shows it in
+	  /proc/last_kmsg, and optionally restart into recovery a set time
+	  into the boot (gts6lwifi_diag.reboot_after=<seconds>). For bringing
+	  up the Galaxy Tab S6 (SM-T860) without a display or USB.
+
+	  It only does anything when the bootloader passes sec_log= on the
+	  command line. If unsure, say N.
+
 config SRAM
 	bool "Generic on-chip SRAM driver"
 	depends on HAS_IOMEM

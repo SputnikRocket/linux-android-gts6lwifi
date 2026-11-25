@@ -299,6 +299,10 @@ jobs:
                 || { echo "::error::$DTBO_NAME.dtbo does not apply to $n.dtb"; exit 1; }
             done
           fi
+          # One RPMh regulator voltage the hardware cannot make fails all of that PMIC's
+          # regulators at boot (and with them storage, USB and the display)
+          dtb_paths=("${dtb_names[@]/#/$B/dts/}")
+          python3 -I .github/scripts/check-rpmh-voltages.py . "${dtb_paths[@]/%/.dtb}"
 
           # Image-dtb, the layout Samsung's bootloader (Qualcomm ABL) takes for an
           # uncompressed kernel: 'UNCOMPRESSED_IMG' + Image size (le32) + Image, then the

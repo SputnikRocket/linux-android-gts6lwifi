@@ -115,6 +115,15 @@ Run **Actions → Build kernel + boot.img → Run workflow**. Inputs:
 | `dtb_names` | both gts6lwifi DTBs | appended to the kernel |
 | `dtbo_name` | the placeholder | packaged as `dtbo.img` |
 | `cmdline` | empty (workflow default) | boot.img command line |
+| `display` | `msm` | `splash`: no MSM display driver, the splash stays up (diagnostic) |
+| `usb_console` | off | kernel console on a USB serial gadget (diagnostic) |
+| `reboot_to_recovery` | off | save the log to the `debug` partition and restart into TWRP after 30/60/120 s (diagnostic) |
+
+The build also fails if an RPMh regulator in a DTB asks for a voltage its
+hardware cannot make (`.github/scripts/check-rpmh-voltages.py`): the
+regulator core would then fail every regulator of that PMIC at boot, and
+with them storage, USB and the display, without a single visible error.
+That happened with LDO17A at 3.3 V (it steps 1.504 V + n * 8 mV).
 
 The toolchain is the AOSP clang that this ACK branch pins (`CLANG_VERSION` in
 `bazel/constants.scl`). It comes from `prebuilts/clang/host/linux-x86` on the

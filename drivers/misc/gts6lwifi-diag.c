@@ -12,9 +12,12 @@
  *   command line as "sec_log=<size>@<address>", and the next Samsung kernel
  *   shows it in /proc/last_kmsg, as long as memory survives the reset.
  *
- * - At every orderly restart or power-off, as Samsung's kernels do, the
- *   kernel log is written to Samsung's "debug" partition in sec_log_buf
- *   format, because a restart is a hard reset that loses memory. It goes to
+ * - At every orderly restart or power-off, as Samsung's kernels do, and
+ *   every gts6lwifi_diag.save_every=<seconds> if set, the kernel log is
+ *   written to Samsung's "debug" partition in sec_log_buf format, because a
+ *   restart is a hard reset that loses memory. It is written with bios, not
+ *   through a file: the task restarting the tablet is often Android's init,
+ *   which SELinux does not let write to a block device. It goes to
  *   the slot for the kernel log of off-mode charging
  *   (6 MiB in, 2 MiB long), which Samsung's kernel only writes with
  *   CONFIG_SEC_LOG_STORE_LPM_KMSG, off in its config: the bootloader copies
@@ -38,6 +41,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/bio.h>
 #include <linux/bitfield.h>
 #include <linux/blkdev.h>
 #include <linux/console.h>
@@ -52,6 +56,7 @@
 #include <linux/log2.h>
 #include <linux/memblock.h>
 #include <linux/moduleparam.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -254,6 +259,34 @@ static int match_debug_partition(struct device *dev, const void *data)
 	       !strcmp(bdev->bd_meta_info->volname, DEBUG_PART_NAME);
 }
 
+#define SAVE_CHUNK		SZ_64K
+
+/* Write the log buffer to the slot with bios, then flush the write cache */
+static int write_klog(struct block_device *bdev, void *buf)
+{
+	unsigned int off;
+	int ret;
+
+	for (off = 0; off < DEBUG_PART_KLOG_SIZE; off += SAVE_CHUNK) {
+		struct bio *bio;
+
+		bio = bio_alloc(bdev, SAVE_CHUNK / PAGE_SIZE,
+				REQ_OP_WRITE | REQ_SYNC, GFP_KERNEL);
+		bio->bi_iter.bi_sector = (DEBUG_PART_KLOG_OFFSET + off) >> SECTOR_SHIFT;
+		if (!bio_add_vmalloc(bio, buf + off, SAVE_CHUNK)) {
+			bio_put(bio);
+			return -EIO;
+		}
+
+		ret = submit_bio_wait(bio);
+		bio_put(bio);
+		if (ret)
+			return ret;
+	}
+
+	return blkdev_issue_flush(bdev);
+}
+
 enum save_result {
 	SAVE_NO_PARTITION,
 	SAVE_FAILED,
@@ -269,8 +302,6 @@ static enum save_result save_log_to_debug_partition(void)
 	struct file *file;
 	struct device *dev;
 	size_t len = 0;
-	ssize_t written;
-	loff_t pos;
 	int ret;
 
 	dev = class_find_device(&block_class, NULL, NULL, match_debug_partition);
@@ -308,14 +339,11 @@ static enum save_result save_log_to_debug_partition(void)
 		goto out_free;
 	}
 
-	pos = DEBUG_PART_KLOG_OFFSET;
-	written = kernel_write(file, klog, DEBUG_PART_KLOG_SIZE, &pos);
-	ret = vfs_fsync(file, 0);
+	ret = write_klog(file_bdev(file), klog);
 	fput(file);
 
-	if (written != DEBUG_PART_KLOG_SIZE || ret)
-		pr_err("writing the log to %s failed: %zd, %d\n", dev_name(dev),
-		       written, ret);
+	if (ret)
+		pr_err("writing the log to %s failed: %d\n", dev_name(dev), ret);
 	else {
 		pr_info("saved %zu bytes of kernel log\n", len);
 		result = SAVE_DONE;
@@ -512,16 +540,38 @@ static void reboot_work_fn(struct work_struct *work)
 static DECLARE_DELAYED_WORK(reboot_work, reboot_work_fn);
 
 /* Save the log at every orderly restart and power-off, like sec_log_store() */
+static unsigned int save_every;
+module_param(save_every, uint, 0444);
+MODULE_PARM_DESC(save_every,
+		 "Also save the log and status this often, in seconds (0: only at restart)");
+
+static DEFINE_MUTEX(save_lock);
+
+static void save_log_and_status(void)
+{
+	mutex_lock(&save_lock);
+	report_status(boot_status(save_log_to_debug_partition()));
+	mutex_unlock(&save_lock);
+}
+
+static void save_work_fn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(save_work, save_work_fn);
+
+/* For a boot that hangs or is reset by force: the last save survives */
+static void save_work_fn(struct work_struct *work)
+{
+	save_log_and_status();
+	schedule_delayed_work(&save_work, (unsigned long)save_every * HZ);
+}
+
 static int save_log_notify(struct notifier_block *nb, unsigned long action,
 			   void *data)
 {
-	enum save_result saved;
-
 	pr_info("%s (%s): saving the kernel log\n",
 		action == SYS_RESTART ? "restart" : "power off",
 		data ? (char *)data : "");
-	saved = save_log_to_debug_partition();
-	report_status(boot_status(saved));
+	cancel_delayed_work_sync(&save_work);
+	save_log_and_status();
 
 	return NOTIFY_DONE;
 }
@@ -541,6 +591,11 @@ static int __init gts6lwifi_diag_init(void)
 		pr_info("restarting into recovery in %u s\n", reboot_after);
 		schedule_delayed_work(&reboot_work,
 				      (unsigned long)reboot_after * HZ);
+	}
+
+	if (save_every) {
+		pr_info("saving the log every %u s\n", save_every);
+		schedule_delayed_work(&save_work, (unsigned long)save_every * HZ);
 	}
 
 	return 0;

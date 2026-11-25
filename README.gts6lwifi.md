@@ -218,8 +218,11 @@ compile-tested.
   So at every orderly restart or power-off this kernel writes its log, in
   the same format, to the slot for off-mode charging logs, which nothing
   else writes here (6 MiB in, 2 MiB long; `drivers/misc/gts6lwifi-diag.c`).
-  For a boot that never restarts, build with the workflow's
-  `reboot_to_recovery` option: that many seconds into the boot the kernel
+  It writes with bios rather than through a file, as SELinux does not let
+  Android's init, often the task restarting the tablet, write to a block
+  device. For a boot that never restarts, build with the workflow's
+  `reboot_to_recovery` option, which also saves the log every 15 s
+  (`gts6lwifi_diag.save_every`): that many seconds into the boot the kernel
   sets the recovery restart reason and restarts into TWRP
   (`gts6lwifi_diag.reboot_after`), forcing the reset if that hangs. Getting
   to TWRP that way already shows the kernel was still running. Then, in

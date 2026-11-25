@@ -6,11 +6,13 @@ Snapdragon 855 / SM8150). The Samsung 4.14 kernel in
 [linux-samsung-gts6lwifi](https://github.com/SputnikRocket/linux-samsung-gts6lwifi)
 served as the hardware reference.
 
-> **Status: builds, not yet booted on hardware.** Everything below is checked at
-> build time. The device tree passes `dtc W=1`, `dtbs_check` and `checkpatch`.
-> The boot-chain details were checked against Qualcomm's ABL sources. Expect to
-> iterate on a real tablet; [Debugging](#debugging) shows how to read a failed
-> boot's log.
+> **Status: boots on hardware.** With the stock Android 12 system and vendor it
+> gets to Android's second stage: storage (UFS, microSD), USB and the
+> touchscreen come up. The panel gets frames but does not show a correct
+> picture yet. The userspace this kernel is meant for is AOSP with mainline
+> graphics:
+> [AOSP-android_device_samsung_gts6lwifi](https://github.com/SputnikRocket/AOSP-android_device_samsung_gts6lwifi).
+> [Debugging](#debugging) shows how to read a boot's log without a screen.
 
 ## What is in the tree
 
@@ -47,8 +49,8 @@ The first commit is an unmodified snapshot of
 | Touchscreen | `fts1ba90a` (STM FTS1BA90A, Samsung firmware) on i2c17, 10 fingers |
 | Power / volume keys, cover hall sensor | yes |
 | Debug UART | `uart2` (GPIO 85/86) as `ttyMSM0` |
-| Adreno 640 | enabled; needs firmware (`a640_zap.mdt` from vendor, `a640_sqe.fw`/`a640_gmu.bin` from linux-firmware) |
-| ADSP / CDSP / SLPI / modem | enabled; load `*.mdt` from the stock firmware partition |
+| Adreno 640 | enabled; needs firmware: `qcom/a630_sqe.fw` and `qcom/a640_gmu.bin` from linux-firmware, and the device-signed zap shader as `qcom/sm8150/samsung/gts6lwifi/a640_zap.mdt` |
+| ADSP / CDSP / SLPI / modem | enabled; load `qcom/sm8150/samsung/gts6lwifi/*.mdt`, the stock firmware partition's `image/` directory (the AOSP build links it there under `/vendor/firmware`) |
 | Wi-Fi / BT (WCN3998) | enabled (ath10k_snoc, hci_qca); needs the modem up and ath10k firmware |
 | ramoops | on Samsung's own ramoops region (0xc1300000, same layout as stock) |
 | S Pen (Wacom W90xx), audio, charger/fuel gauge, pogo keyboard, cameras | not yet: no mainline drivers |
@@ -177,14 +179,16 @@ limit of per-CPU variables"). The workflow builds v1.30 from source.
 
 ## Panel and touchscreen notes
 
-Both drivers were written from Samsung's SM-T860 sources and have only been
-compile-tested.
+Both drivers were written from Samsung's SM-T860 sources. On the tablet both
+probe, and the panel goes through its power-on sequence and takes frames from
+the display engine, but does not show a correct picture yet.
 
 * **Panel** (`drivers/gpu/drm/panel/panel-samsung-amsa05rb06.c`). Power-up
   follows the Anapass sequence from the stock driver: supplies, LP-11, reset
   for 70 ms, wait for TCON_RDY (GPIO 140), init in HS, and Display On at least
   220 ms after reset. Commands go over DSI0 only, so the DT bonds the links
-  without `qcom,sync-dual-dsi`. Brightness only varies the AMOLED off ratio,
+  without `qcom,sync-dual-dsi`. Global parameter writes are a short 0xb0
+  (offset) and a long 0xb2 (value), the packet types Samsung's tables use. Brightness only varies the AMOLED off ratio,
   at the panel's 360-nit gamma calibration. It stays within the AOR range
   Samsung's tables use. Samsung's MTP-based smart dimming, HBM, ACL and
   mDNIe are not implemented.

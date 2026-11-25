@@ -22,6 +22,11 @@
 
 #include <linux/types.h>
 
-#define COMMAND_LINE_SIZE	2048
+/*
+ * ANDROID: Samsung's bootloader on the Galaxy Tab S6 appends about 2000
+ * characters to the boot image's command line, past the 2047 the upstream
+ * value keeps.
+ */
+#define COMMAND_LINE_SIZE	4096
 
 #endif

@@ -1,0 +1,433 @@
+name: Build kernel + boot.img (gts6lwifi / SM-T860, android-mainline)
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: "Base defconfig from arch/arm64/configs"
+        type: string
+        default: gki_defconfig
+      config_fragments:
+        description: "Config fragments merged on top of the defconfig, space separated (from arch/arm64/configs or kernel/configs)"
+        type: string
+        default: gts6lwifi.config
+      extra_config:
+        description: "Kconfig overrides applied last, space separated (e.g. CONFIG_SM_DISPCC_8250=y)"
+        type: string
+        default: ""
+      dtb_names:
+        description: "Device trees appended to the kernel (paths under arch/arm64/boot/dts, without .dtb). The bootloader picks one by SoC ID: SM8150 (339) or SM8150P (361)."
+        type: string
+        default: "qcom/sm8150-samsung-gts6lwifi qcom/sm8150p-samsung-gts6lwifi"
+      dtbo_name:
+        description: "Overlay packaged as dtbo.img (path under arch/arm64/boot/dts, without .dtbo). Leave the default unless you know why: the stock dtbo does not apply to the mainline DTB."
+        type: string
+        default: "qcom/sm8150-samsung-gts6lwifi-dtbo"
+      cmdline:
+        description: "Kernel command line for boot.img. Empty = BOOT_CMDLINE from this workflow."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Toolchain: the AOSP clang that this ACK branch pins (CLANG_VERSION in
+  # bazel/constants.scl), from the prebuilts branch the ACK kernel manifest
+  # uses. Read at run time, so a rebase onto a newer android-mainline picks
+  # up its compiler automatically.
+  CLANG_BRANCH: main-kernel
+  # ---- boot.img header. Same values as the stock SM-T860 boot image
+  # (firmware T860XXS5DWH1, Android 12, Aug 2023 patch level). os_version / patch
+  # level matter: Android's keystore binds keys to them, so keep them equal to the
+  # firmware you run.
+  BOOT_HEADER_VERSION: "1"
+  BOOT_PAGESIZE: "4096"
+  BOOT_BASE: "0x00000000"
+  BOOT_KERNEL_OFFSET: "0x00008000"
+  BOOT_RAMDISK_OFFSET: "0x00000000"
+  BOOT_SECOND_OFFSET: "0x00000000"
+  BOOT_TAGS_OFFSET: "0x01e00000"
+  BOOT_BOARD: SRPSD11A005
+  BOOT_OS_VERSION: "12.0.0"
+  BOOT_OS_PATCH_LEVEL: "2023-08"
+  # The stock command line minus the downstream-only options, plus what a
+  # mainline kernel on this board needs:
+  #  - consoles on the debug UART and on the boot-splash framebuffer
+  #  - androidboot.usbcontroller / boot_devices: mainline device names
+  #  - clk_ignore_unused pd_ignore_unused: keep the display pipeline the
+  #    bootloader set up alive, as there is no panel driver yet
+  BOOT_CMDLINE: "console=ttyMSM0,115200n8 console=tty0 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 androidboot.usbcontroller=a600000.usb androidboot.boot_devices=soc@0/1d84000.ufshc firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7 clk_ignore_unused pd_ignore_unused"
+  BOOT_PARTITION_SIZE: "67108864"   # the boot partition is 64 MiB; the build fails if the image would not fit
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      DEFCONFIG: ${{ inputs.defconfig || 'gki_defconfig' }}
+      CONFIG_FRAGMENTS: ${{ inputs.config_fragments }}
+      EXTRA_CONFIG: ${{ inputs.extra_config }}
+      DTB_NAMES: ${{ inputs.dtb_names }}
+      DTBO_NAME: ${{ inputs.dtbo_name }}
+      CMDLINE_INPUT: ${{ inputs.cmdline }}
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # A GKI build with debug info, the toolchain and ccache need more than the
+      # ~14 GB a hosted runner starts with; drop preinstalled SDKs we do not use.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/share/powershell \
+            /usr/share/swift /usr/local/julia* /opt/microsoft
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex build-essential libssl-dev libelf-dev libdw-dev libncurses-dev \
+            dwarves cpio kmod xz-utils zstd lz4 unzip curl git ca-certificates python3 ccache
+          pahole --version
+
+      - name: Resolve toolchain version
+        run: |
+          set -euo pipefail
+          ver=$(sed -n 's/^CLANG_VERSION="\(r[0-9a-z]*\)"$/\1/p' bazel/constants.scl)
+          [ -n "$ver" ] || { echo "::error::CLANG_VERSION not found in bazel/constants.scl"; exit 1; }
+          echo "CLANG_VERSION=$ver" >> "$GITHUB_ENV"
+          echo "Using AOSP clang-$ver from prebuilts/clang/host/linux-x86 ($CLANG_BRANCH)"
+
+      - name: Restore toolchain cache
+        id: tc-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/toolchains
+          key: toolchains-clang-${{ env.CLANG_VERSION }}-${{ env.CLANG_BRANCH }}
+
+      - name: Download toolchain
+        if: steps.tc-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          TC="$HOME/toolchains/clang"
+          mkdir -p "$TC"
+          curl -fL --retry 3 --retry-delay 10 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${CLANG_BRANCH}/clang-${CLANG_VERSION}.tar.gz" \
+            | tar -xz -C "$TC"
+          # Userspace runtimes the kernel build never uses (about 1 GB less to cache)
+          rm -rf "$TC/android_libc++" "$TC/runtimes_ndk_cxx" "$TC/musl"
+          "$TC/bin/clang" --version | head -n1
+          du -sh "$TC"
+
+      # Saved here (not at job end) so a failing build doesn't throw the download away.
+      - name: Save toolchain cache
+        if: steps.tc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/toolchains
+          key: toolchains-clang-${{ env.CLANG_VERSION }}-${{ env.CLANG_BRANCH }}
+
+      # GitHub evicts caches unused for 7 days, so the first run after a gap is a full build again.
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ env.CLANG_VERSION }}-${{ env.DEFCONFIG }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ env.CLANG_VERSION }}-${{ env.DEFCONFIG }}-
+
+      - name: Build kernel
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+          export CCACHE_DIR="$HOME/.ccache" CCACHE_MAXSIZE=3G CCACHE_BASEDIR="$PWD" CCACHE_COMPRESS=1
+          ccache -z >/dev/null
+          clang --version | head -n1
+
+          # dist/kernel -> "kernel" artifact, dist/modules -> "modules", dist/boot -> "boot-img"
+          mkdir -p dist/kernel dist/modules dist/boot
+          LOG=dist/kernel/build.log
+
+          read -r -a fragments <<<"${CONFIG_FRAGMENTS:-}"
+          for f in "$DEFCONFIG" "${fragments[@]}"; do
+            if [ ! -f "arch/arm64/configs/$f" ] && [ ! -f "kernel/configs/$f" ]; then
+              echo "::error::$f not found in arch/arm64/configs or kernel/configs"
+              exit 1
+            fi
+          done
+
+          make_args=(
+            -j"$(nproc)"
+            O=out ARCH=arm64 LLVM=1 LLVM_IAS=1
+            CC="ccache clang"
+            KBUILD_BUILD_USER=build-user KBUILD_BUILD_HOST=build-host
+          )
+
+          make "${make_args[@]}" "$DEFCONFIG" "${fragments[@]}"
+          if [ -n "${EXTRA_CONFIG:-}" ]; then
+            tr ' ' '\n' <<<"$EXTRA_CONFIG" >> out/.config
+            make "${make_args[@]}" olddefconfig
+          fi
+
+          # Kconfig silently drops options whose dependencies are missing. Fail if
+          # anything a fragment asks for did not make it into the final config
+          # (options overridden through extra_config excepted).
+          bad=0
+          for f in "${fragments[@]}"; do
+            path="arch/arm64/configs/$f"; [ -f "$path" ] || path="kernel/configs/$f"
+            while IFS= read -r line; do
+              case "$line" in
+                CONFIG_*=*) sym=${line%%=*}; want="$line" ;;
+                "# CONFIG_"*" is not set") sym=$(awk '{print $2}' <<<"$line"); want="" ;;
+                *) continue ;;
+              esac
+              grep -qw -- "$sym" <<<"${EXTRA_CONFIG:-}" && continue
+              have=$(grep -E "^$sym=" out/.config || true)
+              if [ "$have" != "$want" ]; then
+                echo "::error title=Config fragment not applied::$f wants '${want:-# $sym is not set}', got '${have:-# $sym is not set}'"
+                bad=1
+              fi
+            done < "$path"
+          done
+          [ "$bad" -eq 0 ] || exit 1
+
+          # -k: keep compiling after a failure so a single run lists every broken file
+          set +e
+          make -k "${make_args[@]}" Image modules 2>&1 | tee "$LOG"
+          rc=${PIPESTATUS[0]}
+          set -e
+          ccache -s | head -n 12 || true
+          [ "$rc" -eq 0 ] || exit "$rc"
+
+          B=out/arch/arm64/boot
+          [ -f "$B/Image" ] || { echo "::error::build finished without producing $B/Image"; exit 1; }
+
+          # ---- device trees ----
+          read -r -a dtb_names <<<"${DTB_NAMES:-}"
+          [ "${#dtb_names[@]}" -gt 0 ] || { echo "::error::dtb_names is empty: the bootloader needs an appended device tree"; exit 1; }
+          dt_targets=("${dtb_names[@]/%/.dtb}")
+          [ -z "${DTBO_NAME:-}" ] || dt_targets+=("$DTBO_NAME.dtbo")
+          make "${make_args[@]}" "${dt_targets[@]}" 2>&1 | tee -a "$LOG"
+          if [ -n "${DTBO_NAME:-}" ]; then
+            # The bootloader applies the dtbo to the base DTB it picks; make sure that works for every one
+            for n in "${dtb_names[@]}"; do
+              out/scripts/dtc/fdtoverlay -i "$B/dts/$n.dtb" -o "$RUNNER_TEMP/check.dtb" "$B/dts/$DTBO_NAME.dtbo" \
+                || { echo "::error::$DTBO_NAME.dtbo does not apply to $n.dtb"; exit 1; }
+            done
+          fi
+
+          # Image-dtb, the layout Samsung's bootloader (Qualcomm ABL) takes for an
+          # uncompressed kernel: 'UNCOMPRESSED_IMG' + Image size (le32) + Image, then the
+          # base DTBs. ABL finds the DTBs at that offset and picks one by SoC ID.
+          python3 - "$B" "${dtb_names[@]}" <<'PY'
+          import struct, sys
+          boot, names = sys.argv[1], sys.argv[2:]
+          img = open(f"{boot}/Image", "rb").read()
+          assert img[56:60] == b"ARM\x64", "Image has no arm64 header"
+          image_size = struct.unpack("<Q", img[16:24])[0]
+          dtbs = []
+          for n in names:
+              d = open(f"{boot}/dts/{n}.dtb", "rb").read()
+              assert d[:4] == bytes.fromhex("d00dfeed"), f"{n}.dtb is not a flattened device tree"
+              dtbs.append(d)
+          hdr = b"UNCOMPRESSED_IMG" + struct.pack("<I", len(img))
+          open(f"{boot}/Image-dtb", "wb").write(hdr + img + b"".join(dtbs))
+          print(f"Image-dtb: {len(img)} byte Image (runtime size {image_size >> 20} MiB) + {len(dtbs)} DTBs ({sum(map(len, dtbs))} bytes)")
+          PY
+
+          for f in Image Image-dtb; do cp "$B/$f" dist/kernel/; done
+          mkdir -p dist/kernel/dtbs
+          for n in "${dtb_names[@]}"; do cp "$B/dts/$n.dtb" dist/kernel/dtbs/; done
+          [ -z "${DTBO_NAME:-}" ] || cp "$B/dts/$DTBO_NAME.dtbo" dist/kernel/dtbs/
+          cp out/.config dist/kernel/config
+          cp out/System.map dist/kernel/
+          make "${make_args[@]}" -s kernelrelease 2>/dev/null | tail -n1 > dist/kernel/kernelrelease.txt
+
+          # Modules: install into a staging dir, drop the build/ and source/ symlinks that
+          # point back into the source tree (artifact upload would follow them and pack
+          # the whole repo), then ship one tarball.
+          stage="$RUNNER_TEMP/modules-root"; rm -rf "$stage"
+          make "${make_args[@]}" INSTALL_MOD_PATH="$stage" INSTALL_MOD_STRIP=1 modules_install > /dev/null
+          find "$stage" -maxdepth 4 -type l \( -name build -o -name source \) -delete
+          rel="$(tr -d '\n' < dist/kernel/kernelrelease.txt)"
+          tar -C "$stage" -czf "dist/modules/modules-${rel:-unknown}.tar.gz" lib
+          ls -lh dist/kernel dist/kernel/dtbs dist/modules
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ env.CLANG_VERSION }}-${{ env.DEFCONFIG }}-${{ github.sha }}
+
+      - name: Summarize build errors
+        if: failure()
+        run: |
+          [ -f dist/kernel/build.log ] || exit 0
+          {
+            echo '### Build errors'
+            echo '```'
+            grep -nE -B3 'error:|\*\*\* \[|undefined reference|undefined symbol' dist/kernel/build.log | head -n 80 || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # boot.img is assembled here, not taken from a stock image: the header is written from the
+      # BOOT_* values (same layout as AOSP's mkbootimg for header v1) around the kernel built above,
+      # an empty ramdisk (what the stock image has) and Samsung's SEANDROIDENFORCE trailer.
+      # dtbo.img is an Android DTBO table holding the one placeholder overlay.
+      - name: Build boot.img and dtbo.img
+        run: |
+          set -euo pipefail
+          B="$GITHUB_WORKSPACE/out/arch/arm64/boot"
+          export BOOT_CMDLINE="${CMDLINE_INPUT:-$BOOT_CMDLINE}"
+          dtbo=""
+          [ -z "${DTBO_NAME:-}" ] || dtbo="$B/dts/$DTBO_NAME.dtbo"
+
+          python3 - "$B/Image-dtb" "$GITHUB_WORKSPACE/dist/boot" "$dtbo" <<'PY'
+          import hashlib, os, struct, sys
+          kernel_path, out_dir, dtbo_path = sys.argv[1:4]
+          e = os.environ
+          def need(ok, msg):                                  # fail with a GitHub error annotation, not a traceback
+              if not ok:
+                  print("::error title=boot.img::" + msg); sys.exit(1)
+          num = lambda k: int(e[k], 0)
+          page, base, ver = num("BOOT_PAGESIZE"), num("BOOT_BASE"), num("BOOT_HEADER_VERSION")
+          need(ver == 1, "only boot image header v1 is implemented")
+          pad = lambda b: b + b"\0" * (-len(b) % page)
+          roundup = lambda n: -(-n // page) * page
+
+          y, m = e["BOOT_OS_PATCH_LEVEL"].split("-")
+          a, b, c = (int(x) for x in e["BOOT_OS_VERSION"].split("."))
+          os_word = ((a << 14 | b << 7 | c) << 11) | ((int(y) - 2000) << 4 | int(m))
+
+          kernel = open(kernel_path, "rb").read()
+          need(kernel.startswith(b"UNCOMPRESSED_IMG"), "kernel is not an Image-dtb")
+          img_end = 20 + struct.unpack("<I", kernel[16:20])[0]
+          need(kernel[img_end:][:4] == bytes.fromhex("d00dfeed"), "Image-dtb has no appended device tree (check dtb_names)")
+
+          # empty cpio "newc" archive: just the TRAILER!!! entry
+          nz = b"TRAILER!!!\0"
+          ramdisk = (b"070701" + b"".join(b"%08X" % v for v in [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, len(nz), 0]) + nz).ljust(124, b"\0")
+
+          # like mkbootimg: the first 511 bytes go in cmdline, the rest in extra_cmdline
+          board, cmd = e["BOOT_BOARD"].encode(), " ".join(e["BOOT_CMDLINE"].split()).encode()
+          need(len(cmd) < 512 + 1024, "kernel command line must be shorter than 1536 bytes (it is %d)" % len(cmd))
+          cmd_main, cmd_extra = cmd[:511], cmd[511:]
+          sha = hashlib.sha1()                                # header 'id': kernel, ramdisk, second, recovery_dtbo
+          for blob in (kernel, ramdisk, b""):
+              sha.update(blob); sha.update(struct.pack("<I", len(blob)))
+          sha.update(struct.pack("<I", 0))
+          h = b"ANDROID!" + struct.pack(
+              "<10I", len(kernel), base + num("BOOT_KERNEL_OFFSET"), len(ramdisk), base + num("BOOT_RAMDISK_OFFSET"),
+              0, base + num("BOOT_SECOND_OFFSET"), base + num("BOOT_TAGS_OFFSET"), page, ver, os_word)
+          h += board.ljust(16, b"\0") + cmd_main.ljust(512, b"\0") + sha.digest().ljust(32, b"\0") + cmd_extra.ljust(1024, b"\0")
+          h += struct.pack("<IQI", 0, 0, 1648)                # recovery_dtbo size / offset, header size
+          assert len(h) == 1648
+          data = pad(pad(h) + pad(kernel) + pad(ramdisk) + b"SEANDROIDENFORCE")
+          need(len(data) <= num("BOOT_PARTITION_SIZE"),
+               "image is %d bytes, larger than the %d byte boot partition" % (len(data), num("BOOT_PARTITION_SIZE")))
+          open(f"{out_dir}/boot.img", "wb").write(data)
+
+          # Read the file back from disk and check every part of it, the way the bootloader will walk it.
+          d = open(f"{out_dir}/boot.img", "rb").read()
+          ks, ka, rs, ra, ss, sa, ta, ps, hv, ov = struct.unpack("<10I", d[8:48])
+          r_off = ps + roundup(ks)
+          dtbs, off = [], img_end
+          while off < len(kernel):                            # the DTBs must tile the rest of the kernel exactly
+              need(kernel[off:off + 4] == bytes.fromhex("d00dfeed"), "appended data at +%d is not a DTB" % off)
+              size = struct.unpack(">I", kernel[off + 4:off + 8])[0]
+              dtbs.append(size); off += size
+          checks = [
+              (d[:8] == b"ANDROID!", "magic"),
+              ((ks, rs, ss, ps, hv, ov) == (len(kernel), len(ramdisk), 0, page, ver, os_word), "sizes / page size / version / os version"),
+              ((ka, ra, sa, ta) == tuple(base + num(k) for k in ("BOOT_KERNEL_OFFSET", "BOOT_RAMDISK_OFFSET", "BOOT_SECOND_OFFSET", "BOOT_TAGS_OFFSET")), "load addresses"),
+              (d[48:64].rstrip(b"\0") == board, "board name"),
+              (d[64:576].rstrip(b"\0") + d[608:1632].rstrip(b"\0") == cmd, "cmdline / extra_cmdline"),
+              (d[ps + 20 + 56:ps + 20 + 60] == b"ARM\x64", "arm64 Image header after UNCOMPRESSED_IMG"),
+              (d[ps:ps + ks] == kernel, "kernel"),
+              (d[r_off:r_off + rs] == ramdisk, "ramdisk"),
+              (d[r_off + roundup(rs):][:16] == b"SEANDROIDENFORCE", "SEANDROIDENFORCE trailer"),
+              (off == len(kernel), "DTBs run past the end of the kernel"),
+          ]
+          for ok, what in checks:
+              need(ok, "read-back check failed: " + what)
+          print("boot.img: %d bytes; kernel %d bytes = %d byte Image + %d DTBs %s; ramdisk %d bytes; cmdline %d bytes; read-back OK"
+                % (len(d), ks, img_end - 20, len(dtbs), dtbs, rs, len(cmd)))
+
+          # dtbo.img: Android DTBO table (big-endian header, as AOSP mkdtboimg writes it) with one entry
+          if dtbo_path:
+              ov = open(dtbo_path, "rb").read()
+              need(ov[:4] == bytes.fromhex("d00dfeed"), "dtbo is not a flattened device tree")
+              hdr_size = entry_size = 32
+              table = struct.pack(">8I", 0xD7B7AB1E, hdr_size + entry_size + len(ov), hdr_size, entry_size, 1, hdr_size, page, 0)
+              table += struct.pack(">8I", len(ov), hdr_size + entry_size, 0, 0, 0, 0, 0, 0)
+              open(f"{out_dir}/dtbo.img", "wb").write(table + ov)
+              t = open(f"{out_dir}/dtbo.img", "rb").read()       # the checks ABL's LoadAndValidateDtboImg makes
+              magic, total, hsz, esz, cnt, eoff = struct.unpack(">6I", t[:24])
+              dsz, doff = struct.unpack(">2I", t[eoff:eoff + 8])
+              need((magic, total, hsz, esz, cnt) == (0xD7B7AB1E, len(t), 32, 32, 1) and eoff + cnt * esz <= len(t)
+                   and t[doff:doff + dsz] == ov, "dtbo.img read-back check failed")
+              print("dtbo.img: %d bytes, 1 overlay of %d bytes; read-back OK" % (len(t), dsz))
+          PY
+
+          cd dist/boot
+          # Odin flashes the images inside a plain tar (AP slot)
+          tar -H ustar -cf gts6lwifi-mainline-odin.tar boot.img $( [ -f dtbo.img ] && echo dtbo.img )
+          ls -l
+          sha256sum -- *.img *.tar | tee SHA256SUMS
+
+      - name: Job summary
+        if: success()
+        run: |
+          {
+            echo "### gts6lwifi android-mainline $(cat dist/kernel/kernelrelease.txt)"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Toolchain | AOSP clang-$CLANG_VERSION |"
+            echo "| Config | \`$DEFCONFIG ${CONFIG_FRAGMENTS:-}\` ${EXTRA_CONFIG:++ \`$EXTRA_CONFIG\`} |"
+            echo "| Image | $(stat -c %s dist/kernel/Image) bytes |"
+            echo "| boot.img | $(stat -c %s dist/boot/boot.img) of $BOOT_PARTITION_SIZE bytes |"
+            echo "| DTBs | ${DTB_NAMES} |"
+            echo
+            echo "Flash \`boot.img\` **and** \`dtbo.img\` together (Odin AP: \`gts6lwifi-mainline-odin.tar\`) on an unlocked"
+            echo "bootloader with a vbmeta that has verification disabled; see README.gts6lwifi.md."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Three separate artifacts: kernel (Image/DTBs/config/log), modules, boot images
+      - name: Upload kernel artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gts6lwifi-mainline-kernel-${{ github.run_number }}
+          path: dist/kernel/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload modules artifact
+        if: always() && hashFiles('dist/modules/*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: gts6lwifi-mainline-modules-${{ github.run_number }}
+          path: dist/modules/
+          retention-days: 30
+          compression-level: 0   # already a .tar.gz
+
+      - name: Upload boot images artifact
+        if: always() && hashFiles('dist/boot/boot.img') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: gts6lwifi-mainline-boot-img-${{ github.run_number }}
+          path: dist/boot/
+          retention-days: 30

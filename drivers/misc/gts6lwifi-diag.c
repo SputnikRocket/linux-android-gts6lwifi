@@ -4,36 +4,48 @@
  *
  * The tablet has no serial port within reach, and while the mainline port
  * is brought up neither its display nor its USB can be relied on, so a boot
- * that goes wrong leaves no trace. This keeps one where Samsung's own
- * kernels, and so TWRP, can show it:
+ * that goes wrong leaves no trace. This keeps one where TWRP can get at it:
  *
  * - The kernel log is copied into Samsung's log buffer in reserved memory,
  *   in the format of Samsung's kernels (drivers/samsung/debug/sec_log_buf.c
  *   in the SM-T860 sources). The bootloader passes its location on the
- *   command line as "sec_log=<size>@<address>". After a reset that keeps
- *   memory, the next Samsung kernel shows it in /proc/last_kmsg, after the
- *   logs of earlier boots.
+ *   command line as "sec_log=<size>@<address>", and the next Samsung kernel
+ *   shows it in /proc/last_kmsg, as long as memory survives the reset.
  *
- * - gts6lwifi_diag.reboot_after=<seconds> restarts into recovery, with a
- *   warm reset that keeps memory, that many seconds into the boot. Getting
- *   to TWRP that way also shows that the kernel was still running.
+ * - gts6lwifi_diag.reboot_after=<seconds> restarts into recovery that many
+ *   seconds into the boot. Before that it writes the kernel log to the
+ *   "debug" partition, where Samsung's kernels save their own log at every
+ *   restart (1 MiB in, 2 MiB long, also in sec_log_buf format), because a
+ *   restart is a hard reset that loses memory unless something keeps it.
+ *   Getting to TWRP that way also shows that the kernel was still running.
  *
- * Panics also restart with a warm reset while the log buffer is in use, so
- * their log survives too.
+ * Panics restart with a warm reset while the log buffer is in use, in case
+ * that keeps memory.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/bitfield.h>
+#include <linux/blkdev.h>
 #include <linux/console.h>
+#include <linux/device.h>
+#include <linux/fs.h>
 #include <linux/hrtimer.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/kmsg_dump.h>
 #include <linux/log2.h>
 #include <linux/memblock.h>
 #include <linux/moduleparam.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/reboot.h>
+#include <linux/regmap.h>
+#include <linux/sizes.h>
 #include <linux/string.h>
+#include <linux/vmalloc.h>
 #include <linux/workqueue.h>
 
 /* Samsung's struct sec_log_buf */
@@ -46,6 +58,16 @@ struct sec_log_buf {
 };
 
 #define SEC_LOG_MAGIC		0x4d474f4c	/* "LOGM" */
+
+/* Samsung's debug partition: where its kernels save the log at a restart */
+#define DEBUG_PART_NAME		"debug"
+#define DEBUG_PART_KLOG_OFFSET	SZ_1M
+#define DEBUG_PART_KLOG_SIZE	SZ_2M
+
+/* PON restart reason, as qcom-pon.c writes it on PMIC gen2 */
+#define PON_SOFT_RB_SPARE	0x8f
+#define PON_REASON_MASK		GENMASK(7, 1)
+#define PON_REASON_RECOVERY	0x1
 
 static phys_addr_t sec_log_base __initdata;
 static unsigned long long sec_log_size __initdata;
@@ -153,13 +175,127 @@ static int __init sec_log_init(void)
 static unsigned int reboot_after;
 module_param(reboot_after, uint, 0444);
 MODULE_PARM_DESC(reboot_after,
-		 "Restart into recovery with a warm reset this many seconds into the boot (0: never)");
+		 "Save the log to the debug partition and restart into recovery this many seconds into the boot (0: never)");
 
-#define REBOOT_FALLBACK_SEC	15
+/*
+ * Ask the bootloader for recovery now, the way qcom-pon.c does at a restart,
+ * so that even a forced reset (below) ends up in TWRP.
+ */
+static void set_recovery_reason(void)
+{
+	struct platform_device *pdev;
+	struct device_node *np;
+	struct regmap *regmap;
+	u32 base;
+	int ret;
+
+	np = of_find_compatible_node(NULL, NULL, "qcom,pm8998-pon");
+	if (!np) {
+		pr_err("no PON node, cannot ask for recovery\n");
+		return;
+	}
+
+	ret = of_property_read_u32(np, "reg", &base);
+	pdev = of_find_device_by_node(np);
+	of_node_put(np);
+	if (ret || !pdev) {
+		pr_err("PON device not found (%d), cannot ask for recovery\n", ret);
+		goto out;
+	}
+
+	regmap = pdev->dev.parent ? dev_get_regmap(pdev->dev.parent, NULL) : NULL;
+	if (!regmap) {
+		pr_err("no PMIC regmap, cannot ask for recovery\n");
+		goto out;
+	}
+
+	ret = regmap_update_bits(regmap, base + PON_SOFT_RB_SPARE, PON_REASON_MASK,
+				 FIELD_PREP(PON_REASON_MASK, PON_REASON_RECOVERY));
+	if (ret)
+		pr_err("cannot write the PON restart reason: %d\n", ret);
+	else
+		pr_info("restart reason set to recovery\n");
+out:
+	if (pdev)
+		put_device(&pdev->dev);
+}
+
+static int match_debug_partition(struct device *dev, const void *data)
+{
+	struct block_device *bdev = dev_to_bdev(dev);
+
+	return bdev_is_partition(bdev) && bdev->bd_meta_info &&
+	       !strcmp(bdev->bd_meta_info->volname, DEBUG_PART_NAME);
+}
+
+/* Write the kernel log where Samsung's kernels save theirs */
+static void save_log_to_debug_partition(void)
+{
+	struct kmsg_dump_iter iter;
+	struct sec_log_buf *klog;
+	struct file *file;
+	struct device *dev;
+	size_t len = 0;
+	ssize_t written;
+	loff_t pos;
+	int ret;
+
+	dev = class_find_device(&block_class, NULL, NULL, match_debug_partition);
+	if (!dev) {
+		pr_err("no \"%s\" partition: storage did not come up, log not saved\n",
+		       DEBUG_PART_NAME);
+		return;
+	}
+
+	if (bdev_nr_bytes(dev_to_bdev(dev)) <
+	    DEBUG_PART_KLOG_OFFSET + DEBUG_PART_KLOG_SIZE) {
+		pr_err("\"%s\" partition is too small, log not saved\n",
+		       DEBUG_PART_NAME);
+		goto out_dev;
+	}
+
+	klog = vzalloc(DEBUG_PART_KLOG_SIZE);
+	if (!klog)
+		goto out_dev;
+
+	pr_info("saving the kernel log to %s (\"%s\")\n", dev_name(dev),
+		DEBUG_PART_NAME);
+
+	/* The newest part of the log that fits */
+	kmsg_dump_rewind(&iter);
+	kmsg_dump_get_buffer(&iter, false, klog->buf,
+			     DEBUG_PART_KLOG_SIZE - sizeof(*klog), &len);
+	klog->magic = SEC_LOG_MAGIC;
+	klog->idx = len;
+
+	file = bdev_file_open_by_dev(dev->devt, BLK_OPEN_READ | BLK_OPEN_WRITE,
+				     NULL, NULL);
+	if (IS_ERR(file)) {
+		pr_err("cannot open %s: %pe\n", dev_name(dev), file);
+		goto out_free;
+	}
+
+	pos = DEBUG_PART_KLOG_OFFSET;
+	written = kernel_write(file, klog, DEBUG_PART_KLOG_SIZE, &pos);
+	ret = vfs_fsync(file, 0);
+	fput(file);
+
+	if (written != DEBUG_PART_KLOG_SIZE || ret)
+		pr_err("writing the log to %s failed: %zd, %d\n", dev_name(dev),
+		       written, ret);
+	else
+		pr_info("saved %zu bytes of kernel log\n", len);
+out_free:
+	vfree(klog);
+out_dev:
+	put_device(dev);
+}
+
+#define REBOOT_FALLBACK_SEC	45
 
 static struct hrtimer reboot_fallback_timer;
 
-/* The orderly restart is stuck, probably in a driver's shutdown */
+/* Saving the log or the orderly restart is stuck: force the reset */
 static enum hrtimer_restart reboot_fallback(struct hrtimer *timer)
 {
 	pr_emerg("restart stuck for %d s, forcing it\n", REBOOT_FALLBACK_SEC);
@@ -170,17 +306,20 @@ static enum hrtimer_restart reboot_fallback(struct hrtimer *timer)
 
 static void reboot_work_fn(struct work_struct *work)
 {
-	pr_emerg("%u s into the boot, restarting into recovery (gts6lwifi_diag.reboot_after)\n",
+	pr_emerg("%u s into the boot: saving the log and restarting into recovery (gts6lwifi_diag.reboot_after)\n",
 		 reboot_after);
 
-	/* Keep memory, and so the log, across the reset */
-	reboot_mode = REBOOT_WARM;
+	set_recovery_reason();
 
 	hrtimer_setup(&reboot_fallback_timer, reboot_fallback, CLOCK_MONOTONIC,
 		      HRTIMER_MODE_REL);
 	hrtimer_start(&reboot_fallback_timer,
 		      ktime_set(REBOOT_FALLBACK_SEC, 0), HRTIMER_MODE_REL);
 
+	save_log_to_debug_partition();
+
+	/* Keep memory too, if the reset allows it */
+	reboot_mode = REBOOT_WARM;
 	kernel_restart("recovery");
 }
 
@@ -191,8 +330,10 @@ static int __init gts6lwifi_diag_init(void)
 	sec_log_init();
 
 	if (reboot_after) {
-		pr_info("restarting into recovery in %u s\n", reboot_after);
-		schedule_delayed_work(&reboot_work, (unsigned long)reboot_after * HZ);
+		pr_info("saving the log and restarting into recovery in %u s\n",
+			reboot_after);
+		schedule_delayed_work(&reboot_work,
+				      (unsigned long)reboot_after * HZ);
 	}
 
 	return 0;

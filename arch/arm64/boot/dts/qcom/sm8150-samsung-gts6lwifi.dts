@@ -7,9 +7,7 @@
  * sm8150-sec-gts6lwifi-overlay-r0x board overlays, which together form
  * the device tree the stock kernel runs with.
  *
- * Not described yet, for lack of a mainline driver: the ANA38401
- * dual-DSI AMOLED panel (the boot splash is used as a framebuffer
- * instead), the STM FTS touchscreen (i2c17 @ 0x49), the Wacom W90xx
+ * Not described yet, for lack of a mainline driver: the Wacom W90xx
  * digitizer (i2c14 @ 0x56), the S2MM005 USB-PD controller, the SM5705
  * charger/fuel gauge/MUIC, the Cirrus Logic audio path and the pogo-pin
  * keyboard.
@@ -75,10 +73,10 @@
 		stdout-path = "serial0:115200n8";
 
 		/*
-		 * The bootloader's splash buffer (cont_splash_mem). The panel
-		 * is a command-mode panel driven as two 1280x1600 halves over
-		 * DSI0 and DSI1, so updates only show if the bootloader leaves
-		 * the display engine in auto-refresh.
+		 * The bootloader's splash buffer (cont_splash_mem), used until
+		 * the MSM display driver takes over the panel. The panel is a
+		 * command-mode panel, so updates only show if the bootloader
+		 * leaves the display engine in auto-refresh.
 		 */
 		framebuffer: framebuffer@9c400000 {
 			compatible = "simple-framebuffer";
@@ -91,6 +89,7 @@
 			clocks = <&gcc GCC_DISP_HF_AXI_CLK>,
 				 <&gcc GCC_DISP_SF_AXI_CLK>;
 			vddio-supply = <&vreg_l14a_1p8>;
+			vdd-supply = <&panel_vdd>;
 		};
 	};
 
@@ -119,6 +118,19 @@
 			linux,can-disable;
 			wakeup-source;
 		};
+	};
+
+	/* "octa-vdd": the AMOLED panel's power, switched by a GPIO */
+	panel_vdd: panel-vdd-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "panel_vdd";
+
+		gpio = <&tlmm 113 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+
+		pinctrl-0 = <&panel_vdd_en>;
+		pinctrl-names = "default";
 	};
 
 	vph_pwr: vph-pwr-regulator {
@@ -510,6 +522,10 @@
 	status = "okay";
 };
 
+&gpi_dma2 {
+	status = "okay";
+};
+
 &gpu {
 	status = "okay";
 };
@@ -517,6 +533,117 @@
 &gpu_zap_shader {
 	/* Samsung-signed, from the vendor partition */
 	firmware-name = "a640_zap.mdt";
+};
+
+&i2c17 {
+	clock-frequency = <400000>;
+
+	status = "okay";
+
+	touchscreen@49 {
+		compatible = "st,fts1ba90a";
+		reg = <0x49>;
+
+		interrupts-extended = <&tlmm 87 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-0 = <&ts_int_n>;
+		pinctrl-names = "default";
+
+		avdd-supply = <&vreg_l17a_3p3>;
+		vdd-supply = <&vreg_l14a_1p8>;
+
+		/* Reported in the panel's portrait orientation */
+		touchscreen-size-x = <1600>;
+		touchscreen-size-y = <2560>;
+	};
+};
+
+&mdss {
+	status = "okay";
+};
+
+/*
+ * The panel is one display driver IC with two DSI inputs, each fed one
+ * 1280x1600 half. Commands go to it over DSI0 only, so the links are
+ * bonded but not synced (no qcom,sync-dual-dsi).
+ */
+&mdss_dsi0 {
+	vdda-supply = <&vreg_l3c_1p2>;
+
+	qcom,dual-dsi-mode;
+	qcom,master-dsi;
+
+	pinctrl-0 = <&mdp_vsync_te>;
+	pinctrl-names = "default";
+
+	status = "okay";
+
+	panel@0 {
+		compatible = "samsung,amsa05rb06";
+		reg = <0>;
+
+		vddio-supply = <&vreg_l14a_1p8>;
+		vdd-supply = <&panel_vdd>;
+		reset-gpios = <&tlmm 59 GPIO_ACTIVE_LOW>;
+		tcon-rdy-gpios = <&tlmm 140 GPIO_ACTIVE_HIGH>;
+
+		pinctrl-0 = <&panel_reset_n>, <&panel_tcon_rdy>;
+		pinctrl-names = "default";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				panel_in_0: endpoint {
+					remote-endpoint = <&mdss_dsi0_out>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				panel_in_1: endpoint {
+					remote-endpoint = <&mdss_dsi1_out>;
+				};
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	remote-endpoint = <&panel_in_0>;
+	data-lanes = <0 1 2 3>;
+};
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l5a_0p875>;
+
+	status = "okay";
+};
+
+&mdss_dsi1 {
+	vdda-supply = <&vreg_l3c_1p2>;
+
+	qcom,dual-dsi-mode;
+
+	/* DSI1 is the slave link and runs from DSI0's PLL */
+	assigned-clock-parents = <&mdss_dsi0_phy DSI_BYTE_PLL_CLK>,
+				 <&mdss_dsi0_phy DSI_PIXEL_PLL_CLK>;
+
+	status = "okay";
+};
+
+&mdss_dsi1_out {
+	remote-endpoint = <&panel_in_1>;
+	data-lanes = <0 1 2 3>;
+};
+
+&mdss_dsi1_phy {
+	vdds-supply = <&vreg_l5a_0p875>;
+
+	status = "okay";
 };
 
 /* Same base as the reference design, 16 MiB larger */
@@ -616,6 +743,41 @@
 	 * 126-129 are reserved on the reference design as well.
 	 */
 	gpio-reserved-ranges = <0 4>, <126 4>;
+
+	mdp_vsync_te: mdp-vsync-te-state {
+		pins = "gpio8";
+		function = "mdp_vsync";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	panel_reset_n: panel-reset-n-state {
+		pins = "gpio59";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	ts_int_n: ts-int-n-state {
+		pins = "gpio87";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	panel_vdd_en: panel-vdd-en-state {
+		pins = "gpio113";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	panel_tcon_rdy: panel-tcon-rdy-state {
+		pins = "gpio140";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-down;
+	};
 
 	qup_uart2_default: qup-uart2-default-state {
 		tx-pins {

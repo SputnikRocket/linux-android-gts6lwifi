@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Samsung Galaxy Tab S6 Wi-Fi (SM-T860), board revisions built with the
+ * SM8150P (SoC ID 361) variant of the SoC. Samsung's bootloader selects
+ * the appended DTB by SoC ID, so these boards need their own DTB.
+ */
+
+#include "sm8150-samsung-gts6lwifi.dts"
+
+/ {
+	qcom,msm-id = <QCOM_ID_SM8150P 0x20000>;
+};

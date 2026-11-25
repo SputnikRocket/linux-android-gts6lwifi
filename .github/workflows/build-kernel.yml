@@ -39,7 +39,7 @@ on:
         type: boolean
         default: false
       reboot_to_recovery:
-        description: "Restart into recovery (TWRP) with a warm reset this many seconds into the boot, so that boot's kernel log can be read there in /proc/last_kmsg (off = never): a diagnostic build."
+        description: "Save the kernel log to the debug partition and restart into recovery (TWRP) this many seconds into the boot, to read the log there (off = never): a diagnostic build."
         type: choice
         options:
           - "off"
@@ -365,9 +365,9 @@ jobs:
           if [ "$USB_CONSOLE" = true ]; then
             BOOT_CMDLINE="$BOOT_CMDLINE console=ttyGS0,115200 ignore_loglevel"
           fi
-          # Diagnostic: the whole log into the RAM log buffer, then a warm restart to TWRP
+          # Diagnostic: save the whole log (debug partition, RAM log buffer), restart into TWRP
           if [ "$REBOOT_AFTER" != off ]; then
-            BOOT_CMDLINE="$BOOT_CMDLINE gts6lwifi_diag.reboot_after=$REBOOT_AFTER"
+            BOOT_CMDLINE="$BOOT_CMDLINE gts6lwifi_diag.reboot_after=$REBOOT_AFTER log_buf_len=4M"
             case " $BOOT_CMDLINE " in *" ignore_loglevel "*) ;; *) BOOT_CMDLINE="$BOOT_CMDLINE ignore_loglevel" ;; esac
             echo "::notice title=Diagnostic build::reboot_to_recovery: restarts into recovery $REBOOT_AFTER s into the boot"
           fi
@@ -505,7 +505,7 @@ jobs:
             echo "| DTBs | ${DTB_NAMES} |"
             echo "| USB console | ${USB_CONSOLE}$([ "$USB_CONSOLE" = true ] && echo ' (diagnostic: kernel log on the USB serial gadget, no adb)') |"
             echo "| Display | ${DISPLAY_MODE}$([ "$DISPLAY_MODE" = splash ] && echo ' (diagnostic: bootloader splash + kernel log, no MSM display driver)') |"
-            echo "| Restart to recovery | ${REBOOT_AFTER}$([ "$REBOOT_AFTER" != off ] && echo " s into the boot (diagnostic: read the log in TWRP, /proc/last_kmsg)") |"
+            echo "| Restart to recovery | ${REBOOT_AFTER}$([ "$REBOOT_AFTER" != off ] && echo " s into the boot (diagnostic: log saved to the debug partition, read it in TWRP)") |"
             echo
             echo "Flash \`boot.img\` **and** \`dtbo.img\` together on an unlocked bootloader with a vbmeta that has"
             echo "verification disabled; see README.gts6lwifi.md:"

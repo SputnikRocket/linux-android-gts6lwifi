@@ -29,7 +29,7 @@ The first commit is an unmodified snapshot of
 | `Input: add STMicroelectronics FTS1BA90A` (+ binding) | driver for the touchscreen |
 | `...: Enable the panel and touchscreen` | DSI/panel/touch nodes in the DT, plus the matching config |
 | `extcon: Add Silicon Mitus SM5705 MUIC` (+ binding) | connects the USB D+/D- lines, which the stock kernel leaves disconnected; the DT node and config follow |
-| `ANDROID: misc: Add gts6lwifi boot diagnostics` | kernel log in Samsung's RAM log buffer (`/proc/last_kmsg` in TWRP), optional timed restart into recovery |
+| `ANDROID: misc: Add gts6lwifi boot diagnostics` | optional timed restart into recovery that first saves the kernel log to the `debug` partition; the log also goes to Samsung's RAM log buffer |
 | `.github/workflows/build-kernel.yml` | builds `Image`, modules, `boot.img`, `dtbo.img` and an Odin tar |
 
 ### Hardware support
@@ -197,25 +197,31 @@ compile-tested.
   USB only works once the SM5705 MUIC driver has connected D+/D- (see
   `extcon-sm5705.c`): the stock kernel disconnects them at shutdown.
 
-* **Last kernel log after a failed boot**. The kernel copies its log into
-  Samsung's log buffer in reserved memory (`sec_log=` on the bootloader's
-  command line, `drivers/misc/gts6lwifi-diag.c`), in the format of Samsung's
-  kernels, so TWRP and stock show it in `/proc/last_kmsg` after a reset that
-  keeps memory. It comes after the logs of earlier boots: look for the last
-  `Linux version ...-gts6lwifi`. ramoops also uses the same region and record
-  layout as the stock kernel (`/sys/fs/pstore/console-ramoops-0`).
-
-  Holding Power + Volume Down is a hard reset (`qcom,s2-type` in the stock
-  DT), which most likely loses memory, and the log with it. Build with the workflow's `reboot_to_recovery` option instead: the
-  kernel restarts into recovery with a warm reset that many seconds into the
-  boot (`gts6lwifi_diag.reboot_after=<seconds>`, falling back to a forced
-  reset if the orderly one hangs), and panics restart with a warm reset too.
-  Getting to TWRP on its own also shows the kernel was still running. Then,
-  in TWRP's terminal or over adb:
+* **Last kernel log after a failed boot**. Restarts on this tablet are hard
+  resets (the bootloader logs `HARD_RESET by PS_HOLD`, even when the kernel
+  asks for a warm one), which apparently lose memory: pstore and the RAM log
+  buffer below came back without the mainline log. Samsung's kernels save
+  their log to the `debug` partition at each restart (1 MiB in, 2 MiB long). Build with the workflow's
+  `reboot_to_recovery` option: that many seconds into the boot the kernel
+  sets the recovery restart reason, writes its log to the same place in the
+  same format (`drivers/misc/gts6lwifi-diag.c`, `gts6lwifi_diag.reboot_after`),
+  and restarts into TWRP, forcing the reset if any of it hangs. Getting to
+  TWRP that way already shows the kernel was still running. Then, in TWRP's
+  terminal or over adb, before restarting TWRP (its kernel overwrites the
+  same place when it restarts):
 
   ```bash
-  cat /proc/last_kmsg > /sdcard/last_kmsg.txt; cp -r /sys/fs/pstore /sdcard/pstore
+  dd if=/dev/block/by-name/debug of=/sdcard/mainline-klog.bin bs=1048576 skip=1 count=2
   ```
+
+  The log is plain text after a 16-byte header. If it holds no
+  `-gts6lwifi` lines, the kernel did not find the partition: storage did not
+  come up.
+
+  The kernel also copies its log into Samsung's RAM log buffer (`sec_log=`
+  on the bootloader's command line), shown in TWRP's `/proc/last_kmsg` if
+  memory ever survives a reset; the end of that file also holds the
+  bootloader's own log of each boot, with the reset and boot reasons.
 * **Framebuffer console**. `console=tty0` puts the kernel log on the boot
   splash, if the bootloader left the panel running.
 * **Serial**. `ttyMSM0` on GPIO 85/86, 115200n8.

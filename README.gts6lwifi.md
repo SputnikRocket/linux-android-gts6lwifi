@@ -174,6 +174,21 @@ compile-tested.
 
 ## Debugging
 
+* **Kernel log over USB**. This panel only updates when the display engine
+  sends it frames, so before the MSM display driver works nothing the kernel
+  draws on the splash ever shows. Build with the workflow's `usb_console`
+  option instead: the tablet then appears as a USB serial port ("Gadget
+  Serial") carrying the kernel console from the start of boot. Android's own
+  USB (adb, MTP) doesn't work in that build. On FreeBSD (umodem driver):
+
+  ```bash
+  sudo kldload -n umodem; until [ -e /dev/cuaU0 ]; do sleep 0.2; done; sudo cu -l /dev/cuaU0 -s 115200
+  ```
+
+  Start that, plug the tablet in, then boot it. On Linux the port is
+  `/dev/ttyACM0` (`picocom /dev/ttyACM0`). `sudo usbconfig` (FreeBSD) or
+  `lsusb` (Linux) lists USB devices.
+
 * **Last kernel log after a failed boot**. ramoops uses the same region and
   record layout as the stock kernel. Boot TWRP (or stock) right after a failed
   mainline boot and read `/sys/fs/pstore/console-ramoops-0`.

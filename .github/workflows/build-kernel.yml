@@ -42,8 +42,10 @@ on:
 permissions:
   contents: read
 
+# A new run replaces an older one of the same variant on the same branch;
+# different variants (display, usb_console) build side by side.
 concurrency:
-  group: kernel-${{ github.ref }}
+  group: kernel-${{ github.ref }}-${{ inputs.display || 'msm' }}-${{ inputs.usb_console && 'usbcon' || 'plain' }}
   cancel-in-progress: true
 
 env:

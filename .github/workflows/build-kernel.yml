@@ -27,6 +27,13 @@ on:
         description: "Kernel command line for boot.img. Empty = BOOT_CMDLINE from this workflow."
         type: string
         default: ""
+      display:
+        description: "msm = panel on the MSM display driver. splash = leave the bootloader's splash framebuffer (and the kernel log on it) up for the whole boot, without the MSM display driver and dispcc: a diagnostic build."
+        type: choice
+        options:
+          - msm
+          - splash
+        default: msm
 
 permissions:
   contents: read
@@ -64,7 +71,7 @@ env:
   #  - androidboot.usbcontroller / boot_devices: mainline device names
   #  - clk_ignore_unused pd_ignore_unused: keep the display pipeline the
   #    bootloader set up alive, as there is no panel driver yet
-  BOOT_CMDLINE: "console=ttyMSM0,115200n8 console=tty0 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 androidboot.usbcontroller=a600000.usb androidboot.boot_devices=soc@0/1d84000.ufshc firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7 clk_ignore_unused pd_ignore_unused"
+  BOOT_CMDLINE: "console=ttyMSM0,115200n8 console=tty0 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 androidboot.usbcontroller=a600000.usb androidboot.boot_devices=soc@0/1d84000.ufshc firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7 clk_ignore_unused pd_ignore_unused fbcon=font:TER16x32"
   BOOT_PARTITION_SIZE: "67108864"   # the boot partition is 64 MiB; the build fails if the image would not fit
 
 jobs:
@@ -78,6 +85,9 @@ jobs:
       DTB_NAMES: ${{ inputs.dtb_names }}
       DTBO_NAME: ${{ inputs.dtbo_name }}
       CMDLINE_INPUT: ${{ inputs.cmdline }}
+      DISPLAY_MODE: ${{ inputs.display || 'msm' }}
+      # Appended to artifact names, so diagnostic builds can't be mistaken for normal ones
+      VARIANT: ${{ inputs.display == 'splash' && '-splash' || '' }}
 
     steps:
       - name: Checkout kernel source
@@ -203,6 +213,13 @@ jobs:
             CC="ccache clang"
             KBUILD_BUILD_USER=build-user KBUILD_BUILD_HOST=build-host
           )
+
+          # display=splash: without the MSM display driver and dispcc nothing reprograms
+          # the display, so the bootloader's splash (with the kernel log) stays up
+          if [ "$DISPLAY_MODE" = splash ]; then
+            EXTRA_CONFIG="CONFIG_DRM_MSM=n CONFIG_SM_DISPCC_8250=n ${EXTRA_CONFIG:-}"
+            echo "::notice title=Diagnostic build::display=splash: MSM display driver and dispcc left out"
+          fi
 
           make "${make_args[@]}" "$DEFCONFIG" "${fragments[@]}"
           if [ -n "${EXTRA_CONFIG:-}" ]; then
@@ -453,11 +470,12 @@ jobs:
             echo "| Image | $(stat -c %s dist/kernel/Image) bytes |"
             echo "| boot.img | $(stat -c %s dist/boot/boot.img) of $BOOT_PARTITION_SIZE bytes |"
             echo "| DTBs | ${DTB_NAMES} |"
+            echo "| Display | ${DISPLAY_MODE}$([ "$DISPLAY_MODE" = splash ] && echo ' (diagnostic: bootloader splash + kernel log, no MSM display driver)') |"
             echo
             echo "Flash \`boot.img\` **and** \`dtbo.img\` together on an unlocked bootloader with a vbmeta that has"
             echo "verification disabled; see README.gts6lwifi.md:"
             echo
-            echo "- **TWRP**: download \`gts6lwifi-mainline-twrp-${GITHUB_RUN_NUMBER}\` and flash the downloaded .zip as it is"
+            echo "- **TWRP**: download \`gts6lwifi-mainline-twrp-${GITHUB_RUN_NUMBER}${VARIANT}\` and flash the downloaded .zip as it is"
             echo "  (Install > select zip). It backs up the current boot and dtbo to \`/sdcard/gts6lwifi-mainline-backup/\`."
             echo "- **Odin**: \`gts6lwifi-mainline-odin.tar\` from the boot-img artifact, in the AP slot."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -467,7 +485,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gts6lwifi-mainline-kernel-${{ github.run_number }}
+          name: gts6lwifi-mainline-kernel-${{ github.run_number }}${{ env.VARIANT }}
           path: dist/kernel/
           if-no-files-found: warn
           retention-days: 30
@@ -476,7 +494,7 @@ jobs:
         if: always() && hashFiles('dist/modules/*') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: gts6lwifi-mainline-modules-${{ github.run_number }}
+          name: gts6lwifi-mainline-modules-${{ github.run_number }}${{ env.VARIANT }}
           path: dist/modules/
           retention-days: 30
           compression-level: 0   # already a .tar.gz
@@ -485,7 +503,7 @@ jobs:
         if: always() && hashFiles('dist/boot/boot.img') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: gts6lwifi-mainline-boot-img-${{ github.run_number }}
+          name: gts6lwifi-mainline-boot-img-${{ github.run_number }}${{ env.VARIANT }}
           path: dist/boot/
           retention-days: 30
 
@@ -494,6 +512,6 @@ jobs:
         if: always() && hashFiles('dist/twrp/META-INF/com/google/android/update-binary') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: gts6lwifi-mainline-twrp-${{ github.run_number }}
+          name: gts6lwifi-mainline-twrp-${{ github.run_number }}${{ env.VARIANT }}
           path: dist/twrp/
           retention-days: 30

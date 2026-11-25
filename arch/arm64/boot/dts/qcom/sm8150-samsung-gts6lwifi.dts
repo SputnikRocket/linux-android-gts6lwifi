@@ -22,7 +22,7 @@
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include "sm8150.dtsi"
 #include "pm8150.dtsi"
-#include "pm8150b.dtsi"
+/* No PM8150B: the SM5705 charges, and SPMI SID 2 does not answer */
 #include "pm8150l.dtsi"
 
 /*
@@ -63,6 +63,39 @@
 	aliases {
 		serial0 = &uart2;
 		serial1 = &uart13;
+	};
+
+	firmware {
+		/*
+		 * Android's first-stage init mounts vendor and product from
+		 * here, as on stock (the bootloader cannot boot a ramdisk with
+		 * system as root). /dev/block/by-name comes from
+		 * androidboot.boot_devices. No AVB: the vbmeta that this
+		 * kernel needs has verification disabled.
+		 */
+		android {
+			compatible = "android,firmware";
+
+			fstab {
+				compatible = "android,fstab";
+
+				product {
+					compatible = "android,product";
+					dev = "/dev/block/by-name/product";
+					type = "ext4";
+					mnt_flags = "ro,errors=panic";
+					fsmgr_flags = "wait";
+				};
+
+				vendor {
+					compatible = "android,vendor";
+					dev = "/dev/block/by-name/vendor";
+					type = "ext4";
+					mnt_flags = "ro,barrier=1,discard";
+					fsmgr_flags = "wait";
+				};
+			};
+		};
 	};
 
 	chosen {

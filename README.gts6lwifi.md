@@ -211,14 +211,16 @@ compile-tested.
   asks for a warm one), which apparently lose memory: pstore and the RAM log
   buffer below came back without the mainline log. Samsung's kernels save
   their log to the `debug` partition at each restart (1 MiB in, 2 MiB long),
-  and the bootloader copies its RAM log buffer over that slot at every boot. Build with the workflow's
+  and the bootloader copies its RAM log buffer over that slot at every boot.
+  So at every orderly restart or power-off this kernel writes its log, in
+  the same format, to the slot for off-mode charging logs, which nothing
+  else writes here (6 MiB in, 2 MiB long; `drivers/misc/gts6lwifi-diag.c`).
+  For a boot that never restarts, build with the workflow's
   `reboot_to_recovery` option: that many seconds into the boot the kernel
-  sets the recovery restart reason, writes its log in the same format to
-  the slot for off-mode charging logs, which nothing else writes here (6 MiB
-  in, 2 MiB long; `drivers/misc/gts6lwifi-diag.c`,
-  `gts6lwifi_diag.reboot_after`), and restarts into TWRP, forcing the reset
-  if any of it hangs. Getting to TWRP that way already shows the kernel was
-  still running. Then, in TWRP's terminal or over adb:
+  sets the recovery restart reason and restarts into TWRP
+  (`gts6lwifi_diag.reboot_after`), forcing the reset if that hangs. Getting
+  to TWRP that way already shows the kernel was still running. Then, in
+  TWRP's terminal or over adb:
 
   ```bash
   dd if=/dev/block/by-name/debug of=/sdcard/mainline-klog.bin bs=1048576 skip=6 count=2

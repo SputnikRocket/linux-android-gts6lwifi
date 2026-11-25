@@ -12,15 +12,18 @@
  *   command line as "sec_log=<size>@<address>", and the next Samsung kernel
  *   shows it in /proc/last_kmsg, as long as memory survives the reset.
  *
- * - gts6lwifi_diag.reboot_after=<seconds> restarts into recovery that many
- *   seconds into the boot. Before that it writes the kernel log to Samsung's
- *   "debug" partition, in sec_log_buf format, because a restart is a hard
- *   reset. Getting to TWRP that way also shows that the kernel was still
- *   running. It goes to the slot for the kernel log of off-mode charging
+ * - At every orderly restart or power-off, as Samsung's kernels do, the
+ *   kernel log is written to Samsung's "debug" partition in sec_log_buf
+ *   format, because a restart is a hard reset that loses memory. It goes to
+ *   the slot for the kernel log of off-mode charging
  *   (6 MiB in, 2 MiB long), which Samsung's kernel only writes with
  *   CONFIG_SEC_LOG_STORE_LPM_KMSG, off in its config: the bootloader copies
  *   the RAM log buffer over the main kernel log slot (1 MiB in) at every
  *   boot, before TWRP could read what was there.
+ *
+ * - gts6lwifi_diag.reboot_after=<seconds> restarts into recovery that many
+ *   seconds into the boot, saving the log on the way. Getting to TWRP that
+ *   way also shows that the kernel was still running.
  *
  * Panics restart with a warm reset while the log buffer is in use, in case
  * that keeps memory.
@@ -184,7 +187,7 @@ static int __init sec_log_init(void)
 static unsigned int reboot_after;
 module_param(reboot_after, uint, 0444);
 MODULE_PARM_DESC(reboot_after,
-		 "Save the log to the debug partition and restart into recovery this many seconds into the boot (0: never)");
+		 "Restart into recovery this many seconds into the boot, saving the log on the way (0: never)");
 
 /*
  * Ask the bootloader for recovery now, the way qcom-pon.c does at a restart,
@@ -315,7 +318,7 @@ static enum hrtimer_restart reboot_fallback(struct hrtimer *timer)
 
 static void reboot_work_fn(struct work_struct *work)
 {
-	pr_emerg("%u s into the boot: saving the log and restarting into recovery (gts6lwifi_diag.reboot_after)\n",
+	pr_emerg("%u s into the boot: restarting into recovery (gts6lwifi_diag.reboot_after)\n",
 		 reboot_after);
 
 	set_recovery_reason();
@@ -325,22 +328,38 @@ static void reboot_work_fn(struct work_struct *work)
 	hrtimer_start(&reboot_fallback_timer,
 		      ktime_set(REBOOT_FALLBACK_SEC, 0), HRTIMER_MODE_REL);
 
-	save_log_to_debug_partition();
-
-	/* Keep memory too, if the reset allows it */
+	/* Keep memory too, if the reset allows it; the notifier saves the log */
 	reboot_mode = REBOOT_WARM;
 	kernel_restart("recovery");
 }
 
 static DECLARE_DELAYED_WORK(reboot_work, reboot_work_fn);
 
+/* Save the log at every orderly restart and power-off, like sec_log_store() */
+static int save_log_notify(struct notifier_block *nb, unsigned long action,
+			   void *data)
+{
+	pr_info("%s (%s): saving the kernel log\n",
+		action == SYS_RESTART ? "restart" : "power off",
+		data ? (char *)data : "");
+	save_log_to_debug_partition();
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block save_log_nb = {
+	.notifier_call = save_log_notify,
+	/* Before the others, while everything still works */
+	.priority = INT_MAX,
+};
+
 static int __init gts6lwifi_diag_init(void)
 {
 	sec_log_init();
+	register_reboot_notifier(&save_log_nb);
 
 	if (reboot_after) {
-		pr_info("saving the log and restarting into recovery in %u s\n",
-			reboot_after);
+		pr_info("restarting into recovery in %u s\n", reboot_after);
 		schedule_delayed_work(&reboot_work,
 				      (unsigned long)reboot_after * HZ);
 	}

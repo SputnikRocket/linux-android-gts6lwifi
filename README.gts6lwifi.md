@@ -123,7 +123,7 @@ Run **Actions → Build kernel + boot.img → Run workflow**. Inputs:
 | `display` | `msm` | `splash`: no MSM display driver, the splash stays up (diagnostic) |
 | `usb_console` | off | kernel console on a USB serial gadget (diagnostic) |
 | `reboot_to_recovery` | off | save the log to the `debug` partition and restart into TWRP after 30/60/120 s (diagnostic) |
-| `drm_debug` | off | the MSM display driver's debug messages (`drm.debug=0x02`, diagnostic) |
+| `display_test` | off | display bring-up (diagnostic): `drm_debug` (`drm.debug=0x02`), or one of the panel driver's bring-up switches (`panel_samsung_amsa05rb06.handover`, `.clock_noncontinuous`, `.stock_init`, see the driver) |
 
 The build also fails if an RPMh regulator in a DTB asks for a voltage its
 hardware cannot make (`.github/scripts/check-rpmh-voltages.py`): the

@@ -38,10 +38,16 @@ on:
         description: "Kernel console over USB (CDC ACM serial gadget, console=ttyGS0): read the boot log from a PC without a working screen. Android's own USB (adb, MTP) does not work in such a build: a diagnostic build."
         type: boolean
         default: false
-      drm_debug:
-        description: "Log the MSM display driver's debug messages (drm.debug=0x02): a diagnostic build."
-        type: boolean
-        default: false
+      display_test:
+        description: "Display bring-up (diagnostic): drm_debug = the MSM display driver's debug messages (drm.debug=0x02); handover = keep the panel as the bootloader left it (no reset, no commands); clock_noncontinuous = DSI clock lane in LP-11 between transfers (Anapass order: HS clock after TCON_RDY); stock_init = the stock panel init byte for byte."
+        type: choice
+        options:
+          - "off"
+          - drm_debug
+          - handover
+          - clock_noncontinuous
+          - stock_init
+        default: "off"
       reboot_to_recovery:
         description: "Save the kernel log to the debug partition and restart into recovery (TWRP) this many seconds into the boot, to read the log there (off = never): a diagnostic build."
         type: choice
@@ -56,10 +62,10 @@ permissions:
   contents: read
 
 # A new run replaces an older one of the same variant on the same branch;
-# different variants (display, usb_console, reboot_to_recovery) build side
-# by side.
+# different variants (display, usb_console, reboot_to_recovery,
+# display_test) build side by side.
 concurrency:
-  group: kernel-${{ github.ref }}-${{ inputs.display || 'msm' }}-${{ inputs.usb_console && 'usbcon' || 'plain' }}-${{ inputs.reboot_to_recovery || 'off' }}-${{ inputs.drm_debug && 'drmdebug' || 'nodrm' }}
+  group: kernel-${{ github.ref }}-${{ inputs.display || 'msm' }}-${{ inputs.usb_console && 'usbcon' || 'plain' }}-${{ inputs.reboot_to_recovery || 'off' }}-${{ inputs.display_test || 'off' }}
   cancel-in-progress: true
 
 env:
@@ -112,8 +118,8 @@ jobs:
       # Appended to artifact names, so diagnostic builds can't be mistaken for normal ones
       USB_CONSOLE: ${{ inputs.usb_console && 'true' || 'false' }}
       REBOOT_AFTER: ${{ inputs.reboot_to_recovery || 'off' }}
-      DRM_DEBUG: ${{ inputs.drm_debug && 'true' || 'false' }}
-      VARIANT: ${{ inputs.display == 'splash' && '-splash' || '' }}${{ inputs.usb_console && '-usbcon' || '' }}${{ (inputs.reboot_to_recovery && inputs.reboot_to_recovery != 'off') && format('-reboot{0}', inputs.reboot_to_recovery) || '' }}${{ inputs.drm_debug && '-drmdebug' || '' }}
+      DISPLAY_TEST: ${{ inputs.display_test || 'off' }}
+      VARIANT: ${{ inputs.display == 'splash' && '-splash' || '' }}${{ inputs.usb_console && '-usbcon' || '' }}${{ (inputs.reboot_to_recovery && inputs.reboot_to_recovery != 'off') && format('-reboot{0}', inputs.reboot_to_recovery) || '' }}${{ (inputs.display_test && inputs.display_test != 'off') && format('-{0}', inputs.display_test) || '' }}
 
     steps:
       - name: Checkout kernel source
@@ -377,9 +383,12 @@ jobs:
           if [ "$USB_CONSOLE" = true ]; then
             BOOT_CMDLINE="$BOOT_CMDLINE console=ttyGS0,115200 ignore_loglevel"
           fi
-          if [ "$DRM_DEBUG" = true ]; then
-            BOOT_CMDLINE="$BOOT_CMDLINE drm.debug=0x02"
-          fi
+          case "$DISPLAY_TEST" in
+            off) ;;
+            drm_debug) BOOT_CMDLINE="$BOOT_CMDLINE drm.debug=0x02" ;;
+            handover|clock_noncontinuous|stock_init) BOOT_CMDLINE="$BOOT_CMDLINE panel_samsung_amsa05rb06.$DISPLAY_TEST=1" ;;
+            *) echo "::error::unknown display_test: $DISPLAY_TEST"; exit 1 ;;
+          esac
           # Diagnostic: save the whole log (debug partition, RAM log buffer), restart into TWRP
           if [ "$REBOOT_AFTER" != off ]; then
             BOOT_CMDLINE="$BOOT_CMDLINE gts6lwifi_diag.reboot_after=$REBOOT_AFTER gts6lwifi_diag.save_every=15 log_buf_len=4M"

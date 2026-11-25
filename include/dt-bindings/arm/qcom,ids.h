@@ -191,6 +191,7 @@
 #define QCOM_ID_SDM439			353
 #define QCOM_ID_SDM429			354
 #define QCOM_ID_SM8250			356
+#define QCOM_ID_SM8150P			361
 #define QCOM_ID_SA8155			362
 #define QCOM_ID_SDA439			363
 #define QCOM_ID_SDA429			364

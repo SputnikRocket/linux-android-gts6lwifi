@@ -87,7 +87,10 @@ env:
   #  - androidboot.usbcontroller / boot_devices: mainline device names
   #  - clk_ignore_unused pd_ignore_unused: keep the display pipeline the
   #    bootloader set up alive, as there is no panel driver yet
-  BOOT_CMDLINE: "console=ttyMSM0,115200n8 console=tty0 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 androidboot.usbcontroller=a600000.usb androidboot.boot_devices=soc@0/1d84000.ufshc firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7 clk_ignore_unused pd_ignore_unused fbcon=font:TER16x32"
+  #  - sec_log=: Samsung's RAM log buffer (gts6lwifi-diag.c). The bootloader
+  #    appends the same value, but its additions run past the 2047 characters
+  #    a mainline kernel keeps of the command line, so give it early as well
+  BOOT_CMDLINE: "console=ttyMSM0,115200n8 console=tty0 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 androidboot.usbcontroller=a600000.usb androidboot.boot_devices=soc@0/1d84000.ufshc firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7 clk_ignore_unused pd_ignore_unused fbcon=font:TER16x32 sec_log=0x200000@0xC1600000"
   BOOT_PARTITION_SIZE: "67108864"   # the boot partition is 64 MiB; the build fails if the image would not fit
 
 jobs:

@@ -1240,6 +1240,19 @@ config TOUCHSCREEN_ST1232
 	  To compile this driver as a module, choose M here: the
 	  module will be called st1232_ts.
 
+config TOUCHSCREEN_STM_FTS1BA90A
+	tristate "STMicroelectronics FTS1BA90A touchscreen"
+	depends on I2C
+	help
+	  Say Y here if you have the STMicroelectronics FTS1BA90A touchscreen
+	  controller with Samsung's firmware, as used in the Samsung Galaxy
+	  Tab S6.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called fts1ba90a.
+
 config TOUCHSCREEN_STMFTS
 	tristate "STMicroelectronics STMFTS touchscreen"
 	depends on I2C

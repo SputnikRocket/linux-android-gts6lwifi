@@ -573,8 +573,8 @@
 };
 
 &gpu_zap_shader {
-	/* Samsung-signed, from the vendor partition */
-	firmware-name = "a640_zap.mdt";
+	/* Samsung-signed, so it has to come from the tablet (see below) */
+	firmware-name = "qcom/sm8150/samsung/gts6lwifi/a640_zap.mdt";
 };
 
 &i2c4 {
@@ -759,31 +759,33 @@
 };
 
 /*
- * Firmware names match the stock firmware partition, which Android
- * mounts at /vendor/firmware_mnt (see firmware_class.path on the
- * command line).
+ * The signed firmware is in the stock firmware partition (apnhlos). The
+ * AOSP build mounts it at /mnt/vendor/apnhlos and links its image/
+ * directory as /vendor/firmware/qcom/sm8150/samsung/gts6lwifi, under
+ * firmware_class.path=/vendor/firmware, next to the linux-firmware files
+ * in /vendor/firmware/qcom.
  */
 &remoteproc_adsp {
-	firmware-name = "adsp.mdt";
+	firmware-name = "qcom/sm8150/samsung/gts6lwifi/adsp.mdt";
 
 	status = "okay";
 };
 
 &remoteproc_cdsp {
-	firmware-name = "cdsp.mdt";
+	firmware-name = "qcom/sm8150/samsung/gts6lwifi/cdsp.mdt";
 
 	status = "okay";
 };
 
 &remoteproc_mpss {
 	/* Also runs the WCN3998 WLAN firmware */
-	firmware-name = "modem.mdt";
+	firmware-name = "qcom/sm8150/samsung/gts6lwifi/modem.mdt";
 
 	status = "okay";
 };
 
 &remoteproc_slpi {
-	firmware-name = "slpi.mdt";
+	firmware-name = "qcom/sm8150/samsung/gts6lwifi/slpi.mdt";
 
 	status = "okay";
 };

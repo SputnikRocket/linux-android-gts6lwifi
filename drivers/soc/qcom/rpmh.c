@@ -224,13 +224,18 @@ static int __fill_rpmh_msg(struct rpmh_request *req, enum rpmh_state state,
  *
  * Context: May sleep. Do not call from atomic contexts.
  *
- * Return: 0 on success, negative errno on failure
+ * Return: 0 on success, -EOPNOTSUPP where the SoC does not support reads,
+ * other negative errno on failure
  */
 int rpmh_read(const struct device *dev, struct tcs_cmd *cmd)
 {
 	DECLARE_COMPLETION_ONSTACK(compl);
 	DEFINE_RPMH_MSG_ONSTACK(dev, RPMH_ACTIVE_ONLY_STATE, &compl, rpm_msg);
 	int ret;
+
+	/* A read that never completes would keep its TCS busy for good */
+	if (ctrlr_to_drv(get_rpmh_ctrlr(dev))->no_read)
+		return -EOPNOTSUPP;
 
 	ret = __fill_rpmh_msg(&rpm_msg, RPMH_ACTIVE_ONLY_STATE, cmd, 1, true);
 	if (ret)

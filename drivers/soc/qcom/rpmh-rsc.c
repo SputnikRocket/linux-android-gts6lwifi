@@ -1050,6 +1050,18 @@ static int rpmh_probe_tcs_config(struct platform_device *pdev, struct rsc_drv *d
 	return 0;
 }
 
+/*
+ * SoCs whose RPMh does not answer reads of some resources (VRM voltage and
+ * mode): the request never completes, its TCS stays busy for good, and
+ * every later RPMh request waits for one forever.
+ */
+static const char * const rpmh_rsc_no_read_socs[] = {
+	"qcom,sc8180x",
+	"qcom,sm7150",
+	"qcom,sm8150",
+	NULL
+};
+
 static int rpmh_rsc_probe(struct platform_device *pdev)
 {
 	struct device_node *dn = pdev->dev.of_node;
@@ -1095,6 +1107,10 @@ static int rpmh_rsc_probe(struct platform_device *pdev)
 		drv->regs = rpmh_rsc_reg_offset_ver_3_0;
 	else
 		drv->regs = rpmh_rsc_reg_offset_ver_2_7;
+
+	drv->no_read = of_machine_compatible_match(rpmh_rsc_no_read_socs);
+	if (drv->no_read)
+		dev_info(&pdev->dev, "RPMh reads are not supported on this SoC\n");
 
 	ret = rpmh_probe_tcs_config(pdev, drv);
 	if (ret)

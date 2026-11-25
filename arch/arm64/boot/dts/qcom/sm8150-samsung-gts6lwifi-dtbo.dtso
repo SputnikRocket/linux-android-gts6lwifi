@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Placeholder overlay for the dtbo partition of the Samsung Galaxy Tab S6
+ * Wi-Fi (SM-T860). It changes nothing; it exists only so that the
+ * bootloader accepts the mainline device tree.
+ *
+ * Samsung's bootloader (Qualcomm ABL) always overlays one entry of a
+ * valid dtbo partition onto the appended base DTB:
+ *  - it needs an entry whose qcom,board-id has the board's platform type
+ *    (8, as in Samsung's own overlays). Subtype 0 is a default match
+ *    for every board revision, and an entry without qcom,msm-id matches
+ *    any SoC.
+ *  - its libufdt refuses overlays without __fixups__, hence the empty
+ *    fragment on &soc, and base DTBs without __symbols__, which is why
+ *    the gts6lwifi DTBs are built with -@.
+ * Samsung's stock overlays target downstream labels that the mainline
+ * DTB does not have, so they fail to apply and the device does not boot.
+ *
+ * Package this as dtbo.img (an Android DTBO table with this single entry)
+ * and flash it together with the mainline boot.img.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	/* Root properties end up in the final tree: keep the base model */
+	model = "Samsung Galaxy Tab S6 Wi-Fi (SM-T860)";
+	qcom,board-id = <8 0>;
+};
+
+&soc {
+};

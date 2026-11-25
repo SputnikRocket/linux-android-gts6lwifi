@@ -130,6 +130,9 @@ static int amsa05rb06_wait_tcon_ready(struct amsa05rb06 *ctx)
 				1000, 200000, false, ctx->tcon_rdy_gpio);
 	if (ret)
 		dev_warn(dev, "TCON_RDY did not go high, continuing\n");
+	else
+		dev_dbg(dev, "TCON_RDY high %lld ms after reset\n",
+			ktime_ms_delta(ktime_get(), ctx->reset_released));
 
 	return 0;
 }
@@ -187,6 +190,7 @@ static int amsa05rb06_prepare(struct drm_panel *panel)
 	}
 
 	ctx->prepared = true;
+	dev_info(dev, "panel initialised\n");
 
 	return 0;
 }
@@ -201,6 +205,8 @@ static int amsa05rb06_enable(struct drm_panel *panel)
 		msleep(AMSA05RB06_DISPLAY_ON_DELAY_MS - elapsed);
 
 	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
+	if (!dsi_ctx.accum_err)
+		dev_info(&ctx->dsi[0]->dev, "display on\n");
 
 	return dsi_ctx.accum_err;
 }

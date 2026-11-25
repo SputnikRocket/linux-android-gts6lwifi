@@ -78,6 +78,38 @@ static inline struct amsa05rb06 *to_amsa05rb06(struct drm_panel *panel)
 	return container_of(panel, struct amsa05rb06, panel);
 }
 
+/*
+ * mipi_dsi_dcs_write_buffer() sends a two byte write as a DCS short write.
+ * The DDI takes global parameter data (0xb2) as a DCS long write only:
+ * Samsung's command tables send "b0 <offset>" short and "b2 <value>" long,
+ * every time. Send it the same way.
+ */
+static void ana38401_dcs_write_long(struct mipi_dsi_multi_context *dsi_ctx,
+				    const u8 *data, size_t len)
+{
+	struct mipi_dsi_device *dsi = dsi_ctx->dsi;
+	struct mipi_dsi_msg msg = {
+		.channel = dsi->channel,
+		.type = MIPI_DSI_DCS_LONG_WRITE,
+		.tx_buf = data,
+		.tx_len = len,
+	};
+	ssize_t ret;
+
+	if (dsi_ctx->accum_err)
+		return;
+
+	if (dsi->mode_flags & MIPI_DSI_MODE_LPM)
+		msg.flags |= MIPI_DSI_MSG_USE_LPM;
+
+	ret = dsi->host->ops->transfer(dsi->host, &msg);
+	if (ret < 0) {
+		dev_err(&dsi->dev, "sending dcs data %*ph failed: %zd\n",
+			(int)len, data, ret);
+		dsi_ctx->accum_err = ret;
+	}
+}
+
 static void ana38401_gpara_write(struct mipi_dsi_multi_context *dsi_ctx,
 				 u8 offset, u8 value)
 {
@@ -85,7 +117,7 @@ static void ana38401_gpara_write(struct mipi_dsi_multi_context *dsi_ctx,
 	const u8 data[] = { ANA38401_GPARA_DATA, value };
 
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, sel, sizeof(sel));
-	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, data, sizeof(data));
+	ana38401_dcs_write_long(dsi_ctx, data, sizeof(data));
 }
 
 static u16 amsa05rb06_nits_to_aor(unsigned int nits)

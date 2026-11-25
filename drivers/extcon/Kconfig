@@ -194,6 +194,21 @@ config EXTCON_SM5502
 	  Silicon Mitus SM5502. The SM5502 is a USB port accessory
 	  detector and switch.
 
+config EXTCON_SM5705
+	tristate "Silicon Mitus SM5705 MUIC USB path support"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Say Y here to enable the MUIC block of the Silicon Mitus SM5705
+	  power management IC, as found in the Samsung Galaxy Tab S6. The
+	  MUIC switches the D+/D- lines of the USB connector, and USB has
+	  no data lines until this driver connects them to the USB PHY.
+
+	  Cable detection is not supported yet.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called extcon-sm5705.
+
 config EXTCON_USB_GPIO
 	tristate "USB GPIO extcon support"
 	depends on GPIOLIB || COMPILE_TEST

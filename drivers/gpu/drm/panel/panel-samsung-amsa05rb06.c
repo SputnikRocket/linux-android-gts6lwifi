@@ -58,6 +58,25 @@
 /* Display On must not be sent earlier than this after reset (TCON_RDY) */
 #define AMSA05RB06_DISPLAY_ON_DELAY_MS	220
 
+/*
+ * Bring-up switches, each testing one way this driver differs from the
+ * stock one while the panel takes frames but shows no correct picture.
+ */
+static bool handover;
+module_param(handover, bool, 0444);
+MODULE_PARM_DESC(handover,
+		 "Keep the panel as the bootloader left it at the first power-on: no reset, no commands");
+
+static bool clock_noncontinuous;
+module_param(clock_noncontinuous, bool, 0444);
+MODULE_PARM_DESC(clock_noncontinuous,
+		 "Let the DSI clock lane rest in LP-11 between transfers, so the panel is reset and waits for TCON_RDY before the HS clock starts, as in the Anapass power sequence");
+
+static bool stock_init;
+module_param(stock_init, bool, 0444);
+MODULE_PARM_DESC(stock_init,
+		 "Initialise the panel with the stock command list byte for byte: AOR for 360 nits, no tear effect command");
+
 struct amsa05rb06 {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi[2];
@@ -66,6 +85,8 @@ struct amsa05rb06 {
 	struct gpio_desc *tcon_rdy_gpio;
 	ktime_t reset_released;
 	bool prepared;
+	/* handover: on as the bootloader left it, so send it nothing */
+	bool handed_over;
 };
 
 static const struct regulator_bulk_data amsa05rb06_supplies[] = {
@@ -132,13 +153,19 @@ static u16 amsa05rb06_nits_to_aor(unsigned int nits)
 	return clamp(aor, AMSA05RB06_AOR_MIN, AMSA05RB06_AOR_MAX);
 }
 
-static void amsa05rb06_set_aor(struct mipi_dsi_multi_context *dsi_ctx,
-			       unsigned int nits)
+static void amsa05rb06_write_aor(struct mipi_dsi_multi_context *dsi_ctx,
+				 unsigned int nits)
 {
 	u16 aor = amsa05rb06_nits_to_aor(nits);
 	const u8 cmd[] = { ANA38401_AOR, aor >> 8, 0x00, aor & 0xff };
 
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, cmd, sizeof(cmd));
+}
+
+static void amsa05rb06_set_aor(struct mipi_dsi_multi_context *dsi_ctx,
+			       unsigned int nits)
+{
+	amsa05rb06_write_aor(dsi_ctx, nits);
 	ana38401_gpara_write(dsi_ctx, ANA38401_GP_UPDATE, 0x01);
 }
 
@@ -183,15 +210,20 @@ static int amsa05rb06_on(struct amsa05rb06 *ctx)
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_TSP_SYNC, 0x15);
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_GAMMA_IDX, 0x04);
 	mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, gamma, sizeof(gamma));
-	amsa05rb06_set_aor(&dsi_ctx,
-			   backlight_get_brightness(ctx->panel.backlight));
+	if (stock_init)
+		amsa05rb06_write_aor(&dsi_ctx, AMSA05RB06_MAX_NITS);
+	else
+		amsa05rb06_set_aor(&dsi_ctx,
+				   backlight_get_brightness(ctx->panel.backlight));
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_ELVSS, 0x0f);
 	/* ACL off: 16 frame average, 60% start */
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_ACL_FRAMES, 0x04);
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_ACL_START, 0x99);
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_ACL, 0x10);
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_UPDATE, 0x01);
-	mipi_dsi_dcs_set_tear_on_multi(&dsi_ctx, MIPI_DSI_DCS_TEAR_MODE_VBLANK);
+	if (!stock_init)
+		mipi_dsi_dcs_set_tear_on_multi(&dsi_ctx,
+					       MIPI_DSI_DCS_TEAR_MODE_VBLANK);
 
 	return dsi_ctx.accum_err;
 }
@@ -206,6 +238,13 @@ static int amsa05rb06_prepare(struct drm_panel *panel)
 				    ctx->supplies);
 	if (ret < 0)
 		return ret;
+
+	if (ctx->handed_over) {
+		ctx->prepared = true;
+		dev_info(dev, "handover: keeping the panel as the bootloader left it\n");
+		return 0;
+	}
+
 	msleep(20);
 
 	/* Anapass power sequence: VDD on, LP-11, reset, TCON_RDY, HS */
@@ -233,6 +272,10 @@ static int amsa05rb06_enable(struct drm_panel *panel)
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi[0] };
 	s64 elapsed = ktime_ms_delta(ktime_get(), ctx->reset_released);
 
+	/* Already on */
+	if (ctx->handed_over)
+		return 0;
+
 	if (elapsed < AMSA05RB06_DISPLAY_ON_DELAY_MS)
 		msleep(AMSA05RB06_DISPLAY_ON_DELAY_MS - elapsed);
 
@@ -259,6 +302,7 @@ static int amsa05rb06_unprepare(struct drm_panel *panel)
 	struct amsa05rb06 *ctx = to_amsa05rb06(panel);
 
 	ctx->prepared = false;
+	ctx->handed_over = false;
 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 	usleep_range(5000, 6000);
 	regulator_bulk_disable(ARRAY_SIZE(amsa05rb06_supplies), ctx->supplies);
@@ -305,7 +349,7 @@ static int amsa05rb06_bl_update_status(struct backlight_device *bl)
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi[0] };
 
 	/* Applied by amsa05rb06_on() when the panel is next powered */
-	if (!ctx->prepared)
+	if (!ctx->prepared || ctx->handed_over)
 		return 0;
 
 	amsa05rb06_set_aor(&dsi_ctx, backlight_get_brightness(bl));
@@ -355,7 +399,9 @@ static int amsa05rb06_probe(struct mipi_dsi_device *dsi)
 	if (ret < 0)
 		return ret;
 
-	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+	/* For a handover, leave the panel out of reset, as the bootloader did */
+	ctx->reset_gpio = devm_gpiod_get(dev, "reset",
+					 handover ? GPIOD_OUT_LOW : GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->reset_gpio))
 		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
 				     "Failed to get reset-gpios\n");
@@ -383,6 +429,7 @@ static int amsa05rb06_probe(struct mipi_dsi_device *dsi)
 				     "Cannot register secondary DSI device\n");
 
 	ctx->dsi[0] = dsi;
+	ctx->handed_over = handover;
 	mipi_dsi_set_drvdata(dsi, ctx);
 	mipi_dsi_set_drvdata(ctx->dsi[1], ctx);
 
@@ -401,6 +448,8 @@ static int amsa05rb06_probe(struct mipi_dsi_device *dsi)
 		ctx->dsi[i]->format = MIPI_DSI_FMT_RGB888;
 		/* Command mode, continuous HS clock, commands in HS */
 		ctx->dsi[i]->mode_flags = 0;
+		if (clock_noncontinuous)
+			ctx->dsi[i]->mode_flags |= MIPI_DSI_CLOCK_NON_CONTINUOUS;
 
 		ret = devm_mipi_dsi_attach(dev, ctx->dsi[i]);
 		if (ret < 0) {

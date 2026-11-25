@@ -40,6 +40,12 @@ properties:
       TCON_RDY output of the display driver IC, high once it is ready after
       a reset.
 
+  err-fg-gpios:
+    maxItems: 1
+    description:
+      ERR_FG output of the display driver IC, which signals an error it
+      detected, such as an electrostatic discharge upsetting it.
+
 required:
   - compatible
   - reg

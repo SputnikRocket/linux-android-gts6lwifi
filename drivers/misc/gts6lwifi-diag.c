@@ -13,11 +13,14 @@
  *   shows it in /proc/last_kmsg, as long as memory survives the reset.
  *
  * - gts6lwifi_diag.reboot_after=<seconds> restarts into recovery that many
- *   seconds into the boot. Before that it writes the kernel log to the
- *   "debug" partition, where Samsung's kernels save their own log at every
- *   restart (1 MiB in, 2 MiB long, also in sec_log_buf format), because a
- *   restart is a hard reset that loses memory unless something keeps it.
- *   Getting to TWRP that way also shows that the kernel was still running.
+ *   seconds into the boot. Before that it writes the kernel log to Samsung's
+ *   "debug" partition, in sec_log_buf format, because a restart is a hard
+ *   reset. Getting to TWRP that way also shows that the kernel was still
+ *   running. It goes to the slot for the kernel log of off-mode charging
+ *   (6 MiB in, 2 MiB long), which Samsung's kernel only writes with
+ *   CONFIG_SEC_LOG_STORE_LPM_KMSG, off in its config: the bootloader copies
+ *   the RAM log buffer over the main kernel log slot (1 MiB in) at every
+ *   boot, before TWRP could read what was there.
  *
  * Panics restart with a warm reset while the log buffer is in use, in case
  * that keeps memory.
@@ -59,9 +62,13 @@ struct sec_log_buf {
 
 #define SEC_LOG_MAGIC		0x4d474f4c	/* "LOGM" */
 
-/* Samsung's debug partition: where its kernels save the log at a restart */
+/*
+ * Samsung's debug partition: SEC_DEBUG_RESET_LPM_KLOG_OFFSET/SIZE in
+ * include/linux/samsung/debug/sec_debug_partition_type.h of the SM-T860
+ * sources
+ */
 #define DEBUG_PART_NAME		"debug"
-#define DEBUG_PART_KLOG_OFFSET	SZ_1M
+#define DEBUG_PART_KLOG_OFFSET	(6 * SZ_1M)
 #define DEBUG_PART_KLOG_SIZE	SZ_2M
 
 /* PON restart reason, as qcom-pon.c writes it on PMIC gen2 */
@@ -122,6 +129,7 @@ static struct console sec_log_console = {
 static int __init sec_log_init(void)
 {
 	phys_addr_t end;
+	u32 start;
 
 	if (!sec_log_size) {
 		pr_info("no sec_log= on the command line, not keeping the log\n");
@@ -161,13 +169,14 @@ static int __init sec_log_init(void)
 		WRITE_ONCE(sec_log->magic, SEC_LOG_MAGIC);
 	}
 	sec_log_idx = READ_ONCE(sec_log->idx);
+	start = sec_log_idx % sec_log_buf_size;
 
 	/* A panic should keep the log as well */
 	panic_reboot_mode = REBOOT_WARM;
 
 	register_console(&sec_log_console);
 	pr_info("keeping the kernel log in sec_log=%#llx@%pa, from offset %u\n",
-		sec_log_size, &sec_log_base, sec_log_idx % sec_log_buf_size);
+		sec_log_size, &sec_log_base, start);
 
 	return 0;
 }
@@ -228,7 +237,7 @@ static int match_debug_partition(struct device *dev, const void *data)
 	       !strcmp(bdev->bd_meta_info->volname, DEBUG_PART_NAME);
 }
 
-/* Write the kernel log where Samsung's kernels save theirs */
+/* Write the kernel log to Samsung's debug partition */
 static void save_log_to_debug_partition(void)
 {
 	struct kmsg_dump_iter iter;

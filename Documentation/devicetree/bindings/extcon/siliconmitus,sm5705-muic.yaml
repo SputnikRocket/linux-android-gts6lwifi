@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/extcon/siliconmitus,sm5705-muic.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Silicon Mitus SM5705 MUIC (Micro-USB Interface Controller)
+
+maintainers:
+  - SputnikRocket <108942763+SputnikRocket@users.noreply.github.com>
+
+description:
+  The MUIC block of the Silicon Mitus SM5705 power management IC detects
+  accessories on the USB connector and switches its D+/D- lines to the USB
+  PHY, a UART or an audio path. It has its own I2C address, separate from
+  the charger and fuel gauge blocks of the SM5705.
+
+properties:
+  compatible:
+    const: siliconmitus,sm5705-muic
+
+  reg:
+    maxItems: 1
+    description: I2C address of the MUIC block, usually 0x25.
+
+  interrupts:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        extcon@25 {
+            compatible = "siliconmitus,sm5705-muic";
+            reg = <0x25>;
+            interrupt-parent = <&tlmm>;
+            interrupts = <122 IRQ_TYPE_LEVEL_LOW>;
+        };
+    };

@@ -643,8 +643,9 @@
 		vdd-supply = <&panel_vdd>;
 		reset-gpios = <&tlmm 59 GPIO_ACTIVE_LOW>;
 		tcon-rdy-gpios = <&tlmm 140 GPIO_ACTIVE_HIGH>;
+		err-fg-gpios = <&pm8150_gpios 1 GPIO_ACTIVE_LOW>;
 
-		pinctrl-0 = <&panel_reset_n>, <&panel_tcon_rdy>;
+		pinctrl-0 = <&panel_reset_n>, <&panel_tcon_rdy>, <&panel_err_fg>;
 		pinctrl-names = "default";
 
 		ports {
@@ -707,6 +708,19 @@
 /* Same base as the reference design, 16 MiB larger */
 &mpss_mem {
 	reg = <0x0 0x8d800000 0x0 0xa000000>;
+};
+
+&pm8150_gpios {
+	/* Not owned by the application processor (qcom,gpios-disallowed) */
+	gpio-reserved-ranges = <1 1>, <4 1>, <7 1>;
+
+	/* ERR_FG, the panel's ESD detect output: high, low on an error */
+	panel_err_fg: panel-err-fg-state {
+		pins = "gpio1";
+		function = "normal";
+		bias-disable;
+		input-enable;
+	};
 };
 
 &pm8150l_gpios {

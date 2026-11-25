@@ -25,6 +25,9 @@ The first commit is an unmodified snapshot of
 | `arm64: dts: qcom: Add Samsung Galaxy Tab S6 Wi-Fi` | `sm8150-samsung-gts6lwifi.dts` (and the SM8150P variant) |
 | `...: Add a dtbo placeholder` | `sm8150-samsung-gts6lwifi-dtbo.dtso`, and the base DTBs are built with `-@` |
 | `ANDROID: arm64: configs: Add gts6lwifi fragment` | `arch/arm64/configs/gts6lwifi.config`, applied on top of `gki_defconfig` |
+| `drm/panel: Add Samsung AMSA05RB06` (+ binding) | driver for the AMOLED panel (Anapass ANA38401) |
+| `Input: add STMicroelectronics FTS1BA90A` (+ binding) | driver for the touchscreen |
+| `...: Enable the panel and touchscreen` | DSI/panel/touch nodes in the DT, plus the matching config |
 | `.github/workflows/build-kernel.yml` | builds `Image`, modules, `boot.img`, `dtbo.img` and an Odin tar |
 
 ### Hardware support
@@ -35,14 +38,15 @@ The first commit is an unmodified snapshot of
 | Memory map | Samsung's layout: TZ region, PIL carve-outs, TIMA/RKP, sec_debug, plog |
 | UFS (system), microSD | yes |
 | USB | USB 2.0 device mode (adb/MTP gadget). The S2MM005 Type-C/PD chip has no mainline driver |
-| Display | bootloader splash as `simple-framebuffer` (2560x1600), kernel console on it. No panel driver (ANA38401 DDI) |
+| Display | `panel-samsung-amsa05rb06` (Anapass ANA38401 DDI) on bonded DSI0/DSI1, command mode, 2560x1600@60 via the MSM DPU. Brightness 2–360 nits (`/sys/class/backlight`). The bootloader splash is a `simple-framebuffer` until the MSM driver takes over |
+| Touchscreen | `fts1ba90a` (STM FTS1BA90A, Samsung firmware) on i2c17, 10 fingers |
 | Power / volume keys, cover hall sensor | yes |
 | Debug UART | `uart2` (GPIO 85/86) as `ttyMSM0` |
 | Adreno 640 | enabled; needs firmware (`a640_zap.mdt` from vendor, `a640_sqe.fw`/`a640_gmu.bin` from linux-firmware) |
 | ADSP / CDSP / SLPI / modem | enabled; load `*.mdt` from the stock firmware partition |
 | Wi-Fi / BT (WCN3998) | enabled (ath10k_snoc, hci_qca); needs the modem up and ath10k firmware |
 | ramoops | on Samsung's own ramoops region (0xc1300000, same layout as stock) |
-| Touchscreen (STM FTS), S Pen (Wacom W90xx), audio, charger/fuel gauge, pogo keyboard, cameras | not yet: no mainline drivers |
+| S Pen (Wacom W90xx), audio, charger/fuel gauge, pogo keyboard, cameras | not yet: no mainline drivers |
 
 ## How the bootloader handles this image (and what to flash)
 
@@ -132,10 +136,30 @@ limit of per-CPU variables"). The workflow builds v1.30 from source.
 * `CONFIG_CMDLINE_FROM_BOOTLOADER` is set, so GKI's built-in command line
   (including `arm64.no32bit_el0`) is ignored whenever the bootloader passes
   one. Samsung's always does, so 32-bit apps keep working.
-* The SM8150 display clock controller (`SM_DISPCC_8250`) is left out on purpose.
-  Linux then leaves the splash framebuffer's clocks alone. The command line's
-  `clk_ignore_unused pd_ignore_unused` keeps the rest of the display pipeline
-  up.
+* The command line's `clk_ignore_unused pd_ignore_unused` keeps the
+  bootloader's display pipeline (and with it the splash framebuffer) alive
+  until the MSM display driver takes over.
+
+## Panel and touchscreen notes
+
+Both drivers were written from Samsung's SM-T860 sources and have only been
+compile-tested.
+
+* **Panel** (`drivers/gpu/drm/panel/panel-samsung-amsa05rb06.c`). Power-up
+  follows the Anapass sequence from the stock driver: supplies, LP-11, reset
+  for 70 ms, wait for TCON_RDY (GPIO 140), init in HS, and Display On at least
+  220 ms after reset. Commands go over DSI0 only, so the DT bonds the links
+  without `qcom,sync-dual-dsi`. Brightness only varies the AMOLED off ratio,
+  at the panel's 360-nit gamma calibration. It stays within the AOR range
+  Samsung's tables use. Samsung's MTP-based smart dimming, HBM, ACL and
+  mDNIe are not implemented.
+* **Touchscreen** (`drivers/input/touchscreen/fts1ba90a.c`). It reports in the
+  controller's portrait coordinates (1600x2560), while the panel scans
+  landscape (2560x1600). If touches don't line up with the screen, add
+  `touchscreen-swapped-x-y` and, if needed, `touchscreen-inverted-x` or
+  `touchscreen-inverted-y` to the `touchscreen@49` node. The driver force-calibrates
+  at probe, as the stock driver does, so don't touch the screen while it
+  boots.
 
 ## Debugging
 

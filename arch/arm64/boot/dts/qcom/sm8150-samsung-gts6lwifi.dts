@@ -405,10 +405,15 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		/* Touchscreen AVDD */
+		/*
+		 * Touchscreen AVDD. Stock asks for 3.3 V, which this LDO
+		 * (1.504 V + n * 8 mV) cannot make: 3.3 V here would fail the
+		 * whole PMIC's regulators with "unsupportable voltage
+		 * constraints".
+		 */
 		vreg_l17a_3p3: ldo17 {
-			regulator-min-microvolt = <3300000>;
-			regulator-max-microvolt = <3300000>;
+			regulator-min-microvolt = <3304000>;
+			regulator-max-microvolt = <3304000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};

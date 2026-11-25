@@ -608,6 +608,7 @@ MODULE_PARM_DESC(te_probe,
 #define DPU_INTF_TEAR_SYNC_CONFIG_HEIGHT 0x28c
 #define DPU_INTF_TEAR_VSYNC_INIT_VAL	0x294
 #define DPU_INTF_TEAR_INT_COUNT_VAL	0x298
+#define DPU_INTF_TEAR_AUTOREFRESH_CONFIG 0x2b4
 
 /* INTF_1 and INTF_2 (DSI0 and DSI1) in SM8150's DPU */
 static const u32 te_probe_intf_offsets[] = { 0x6a800, 0x6b000 };
@@ -622,6 +623,10 @@ static void te_probe_intf(unsigned int index)
 	unsigned int i, wraps = 0, prev = 0;
 	ktime_t start;
 	s64 us;
+
+	/* Bit 31 enables it, the low bits are the frame count */
+	pr_info("te_probe: intf%u: autorefresh %#x\n", index + 1,
+		readl(intf + DPU_INTF_TEAR_AUTOREFRESH_CONFIG));
 
 	if (!readl(intf + DPU_INTF_TEAR_TEAR_CHECK_EN)) {
 		pr_info("te_probe: intf%u: tear check off\n", index + 1);

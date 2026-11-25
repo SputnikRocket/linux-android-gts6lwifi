@@ -121,6 +121,7 @@ Run **Actions → Build kernel + boot.img → Run workflow**. Inputs:
 | `display` | `msm` | `splash`: no MSM display driver, the splash stays up (diagnostic) |
 | `usb_console` | off | kernel console on a USB serial gadget (diagnostic) |
 | `reboot_to_recovery` | off | save the log to the `debug` partition and restart into TWRP after 30/60/120 s (diagnostic) |
+| `drm_debug` | off | the MSM display driver's debug messages (`drm.debug=0x02`, diagnostic) |
 
 The build also fails if an RPMh regulator in a DTB asks for a voltage its
 hardware cannot make (`.github/scripts/check-rpmh-voltages.py`): the

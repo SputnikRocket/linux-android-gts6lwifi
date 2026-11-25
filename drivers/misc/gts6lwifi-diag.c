@@ -29,7 +29,8 @@
  *   word goes into the value of the PMIC's RTC alarm, which the bootloader
  *   prints at the next boot ("[SAPA] ALARM=<decimal>", in TWRP's
  *   /proc/last_kmsg): one bit per device below, set when it has a driver
- *   bound. The top nibble is 0xa, which keeps the alarm decades away.
+ *   bound, and a few more. The top three bits are 101 (hex a or b), which
+ *   keeps the alarm decades away.
  *
  * Panics restart with a warm reset while the log buffer is in use, in case
  * that keeps memory.
@@ -359,7 +360,8 @@ static const char * const status_devices[] = {
 #define STATUS_PARTITION	BIT(25)	/* the debug partition exists */
 #define STATUS_SAVED		BIT(26)	/* the log was saved there */
 #define STATUS_RUNNING		BIT(27)	/* init is running: root was mounted */
-#define STATUS_MAGIC		(0xaU << 28)
+#define STATUS_PROBING		BIT(28)	/* a platform device is still in probe */
+#define STATUS_MAGIC		(0x5U << 29)
 
 static bool compatible_bound(const char *compat)
 {
@@ -401,6 +403,20 @@ static bool muic_bound(void)
 	return bound;
 }
 
+/* really_probe() holds the device lock: a held lock now means a stuck probe */
+static int check_probing(struct device *dev, void *data)
+{
+	if (device_trylock(dev)) {
+		device_unlock(dev);
+		return 0;
+	}
+
+	pr_warn("%s is busy, probably stuck in probe\n", dev_name(dev));
+	*(bool *)data = true;
+
+	return 0;
+}
+
 static int match_sd_disk(struct device *dev, const void *data)
 {
 	return !bdev_is_partition(dev_to_bdev(dev)) &&
@@ -411,6 +427,7 @@ static u32 boot_status(enum save_result saved)
 {
 	struct device *disk;
 	u32 status = STATUS_MAGIC;
+	bool probing = false;
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(status_devices); i++)
@@ -432,6 +449,10 @@ static u32 boot_status(enum save_result saved)
 		status |= STATUS_SAVED;
 	if (system_state == SYSTEM_RUNNING)
 		status |= STATUS_RUNNING;
+
+	bus_for_each_dev(&platform_bus_type, NULL, &probing, check_probing);
+	if (probing)
+		status |= STATUS_PROBING;
 
 	return status;
 }

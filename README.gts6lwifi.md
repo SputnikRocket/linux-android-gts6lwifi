@@ -234,8 +234,9 @@ compile-tested.
   the same restarts the kernel puts it in the PMIC's RTC alarm value, which
   TWRP's kernel prints at boot (`dmesg | grep sapa_load_alarm`, the `pmic=`
   value) and the bootloader too (`[SAPA] ALARM=` in `/proc/last_kmsg`). It
-  starts with hex `a`; the other bits say which devices have a driver bound
-  (`status_devices[]` and `STATUS_*` in `drivers/misc/gts6lwifi-diag.c`).
+  starts with hex `a` or `b`; the other bits say which devices have a driver
+  bound, and whether a probe was still stuck (`status_devices[]` and
+  `STATUS_*` in `drivers/misc/gts6lwifi-diag.c`).
 
   The kernel also copies its log into Samsung's RAM log buffer (`sec_log=`
   on the bootloader's command line), shown in TWRP's `/proc/last_kmsg` if

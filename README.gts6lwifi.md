@@ -28,6 +28,7 @@ The first commit is an unmodified snapshot of
 | `drm/panel: Add Samsung AMSA05RB06` (+ binding) | driver for the AMOLED panel (Anapass ANA38401) |
 | `Input: add STMicroelectronics FTS1BA90A` (+ binding) | driver for the touchscreen |
 | `...: Enable the panel and touchscreen` | DSI/panel/touch nodes in the DT, plus the matching config |
+| `extcon: Add Silicon Mitus SM5705 MUIC` (+ binding) | connects the USB D+/D- lines, which the stock kernel leaves disconnected; the DT node and config follow |
 | `.github/workflows/build-kernel.yml` | builds `Image`, modules, `boot.img`, `dtbo.img` and an Odin tar |
 
 ### Hardware support
@@ -37,7 +38,7 @@ The first commit is an unmodified snapshot of
 | CPU, RPMh, clocks, pinctrl, interconnects, SMMU, PMICs | described; drivers built in |
 | Memory map | Samsung's layout: TZ region, PIL carve-outs, TIMA/RKP, sec_debug, plog |
 | UFS (system), microSD | yes |
-| USB | USB 2.0 device mode (adb/MTP gadget). The S2MM005 Type-C/PD chip has no mainline driver |
+| USB | USB 2.0 device mode (adb/MTP gadget). D+/D- run through the SM5705 MUIC, which `extcon-sm5705` connects to the USB PHY (no cable detection yet). The S2MM005 Type-C/PD chip has no mainline driver |
 | Display | `panel-samsung-amsa05rb06` (Anapass ANA38401 DDI) on bonded DSI0/DSI1, command mode, 2560x1600@60 via the MSM DPU. Brightness 2–360 nits (`/sys/class/backlight`). The bootloader splash is a `simple-framebuffer` until the MSM driver takes over |
 | Touchscreen | `fts1ba90a` (STM FTS1BA90A, Samsung firmware) on i2c17, 10 fingers |
 | Power / volume keys, cover hall sensor | yes |
@@ -185,9 +186,15 @@ compile-tested.
   sudo kldload -n umodem; until [ -e /dev/cuaU0 ]; do sleep 0.2; done; sudo cu -l /dev/cuaU0 -s 115200
   ```
 
-  Start that, plug the tablet in, then boot it. On Linux the port is
-  `/dev/ttyACM0` (`picocom /dev/ttyACM0`). `sudo usbconfig` (FreeBSD) or
-  `lsusb` (Linux) lists USB devices.
+  Start that, plug the tablet in, then boot it. Check which `/dev/cuaU*`
+  ports exist beforehand: the stock system also has a serial port
+  ("SAMSUNG SAMSUNGAndroid"), and another device may already own `cuaU0`.
+  On Linux the port is `/dev/ttyACM0` (`picocom /dev/ttyACM0`).
+  `sudo usbconfig` (FreeBSD) or `lsusb` (Linux) lists USB devices; the
+  kernel's gadget is 0525:a4a7 "Gadget Serial".
+
+  USB only works once the SM5705 MUIC driver has connected D+/D- (see
+  `extcon-sm5705.c`): the stock kernel disconnects them at shutdown.
 
 * **Last kernel log after a failed boot**. ramoops uses the same region and
   record layout as the stock kernel. Boot TWRP (or stock) right after a failed

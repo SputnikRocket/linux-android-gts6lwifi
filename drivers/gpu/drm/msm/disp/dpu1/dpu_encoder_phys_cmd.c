@@ -617,9 +617,12 @@ static void dpu_encoder_phys_cmd_enable_te(struct dpu_encoder_phys *phys_enc)
 {
 	if (!phys_enc)
 		return;
-	if (!dpu_encoder_phys_cmd_is_master(phys_enc))
-		return;
 
+	/*
+	 * Every interface, not only the master: a bootloader driving a
+	 * bonded (dual DSI) command mode panel leaves autorefresh on for
+	 * both, and the slave would go on sending frames of its own.
+	 */
 	if (phys_enc->has_intf_te) {
 		if (!phys_enc->hw_intf->ops.disable_autorefresh)
 			return;

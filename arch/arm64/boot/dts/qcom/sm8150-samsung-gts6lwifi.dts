@@ -522,6 +522,10 @@
 	status = "okay";
 };
 
+&gpi_dma0 {
+	status = "okay";
+};
+
 &gpi_dma2 {
 	status = "okay";
 };
@@ -533,6 +537,22 @@
 &gpu_zap_shader {
 	/* Samsung-signed, from the vendor partition */
 	firmware-name = "a640_zap.mdt";
+};
+
+&i2c4 {
+	clock-frequency = <400000>;
+
+	status = "okay";
+
+	/* USB D+/D- switch: USB has no data lines until this connects them */
+	extcon@25 {
+		compatible = "siliconmitus,sm5705-muic";
+		reg = <0x25>;
+
+		interrupts-extended = <&tlmm 122 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-0 = <&muic_int_n>;
+		pinctrl-names = "default";
+	};
 };
 
 &i2c17 {
@@ -682,6 +702,10 @@
 	status = "okay";
 };
 
+&qupv3_id_0 {
+	status = "okay";
+};
+
 &qupv3_id_1 {
 	status = "okay";
 };
@@ -749,6 +773,13 @@
 		function = "mdp_vsync";
 		drive-strength = <2>;
 		bias-pull-down;
+	};
+
+	muic_int_n: muic-int-n-state {
+		pins = "gpio122";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
 	};
 
 	panel_reset_n: panel-reset-n-state {

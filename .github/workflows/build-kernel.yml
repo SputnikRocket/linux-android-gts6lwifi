@@ -41,6 +41,9 @@ env:
   # uses. Read at run time, so a rebase onto a newer android-mainline picks
   # up its compiler automatically.
   CLANG_BRANCH: main-kernel
+  # pahole generates the BTF that gki_defconfig enables. Ubuntu's 1.25 cannot
+  # handle this kernel (it stops at 4096 per-CPU variables), so build a newer one.
+  PAHOLE_VERSION: v1.30
   # ---- boot.img header. Same values as the stock SM-T860 boot image
   # (firmware T860XXS5DWH1, Android 12, Aug 2023 patch level). os_version / patch
   # level matter: Android's keystore binds keys to them, so keep them equal to the
@@ -97,9 +100,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison flex build-essential libssl-dev libelf-dev libdw-dev libncurses-dev \
-            dwarves cpio kmod xz-utils zstd lz4 unzip curl git ca-certificates python3 ccache
-          pahole --version
+            bc bison flex build-essential libssl-dev libelf-dev libdw-dev libncurses-dev zlib1g-dev \
+            cmake cpio kmod xz-utils zstd lz4 unzip curl git ca-certificates python3 ccache
 
       - name: Resolve toolchain version
         run: |
@@ -138,6 +140,33 @@ jobs:
           path: ~/toolchains
           key: toolchains-clang-${{ env.CLANG_VERSION }}-${{ env.CLANG_BRANCH }}
 
+      - name: Restore pahole cache
+        id: pahole-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/tools/pahole
+          key: pahole-${{ env.PAHOLE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-ubuntu-24.04
+
+      - name: Build pahole
+        if: steps.pahole-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/pahole-src"
+          git clone --depth 1 --branch "$PAHOLE_VERSION" --recurse-submodules --shallow-submodules \
+            https://git.kernel.org/pub/scm/devel/pahole/pahole.git "$src"
+          cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$HOME/tools/pahole"
+          cmake --build "$src/build" -j"$(nproc)"
+          cmake --install "$src/build"
+          "$HOME/tools/pahole/bin/pahole" --version
+
+      - name: Save pahole cache
+        if: steps.pahole-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/tools/pahole
+          key: pahole-${{ env.PAHOLE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-ubuntu-24.04
+
       # GitHub evicts caches unused for 7 days, so the first run after a gap is a full build again.
       - name: Restore ccache
         uses: actions/cache/restore@v4
@@ -150,10 +179,11 @@ jobs:
       - name: Build kernel
         run: |
           set -euo pipefail
-          export PATH="$HOME/toolchains/clang/bin:$PATH"
+          export PATH="$HOME/tools/pahole/bin:$HOME/toolchains/clang/bin:$PATH"
           export CCACHE_DIR="$HOME/.ccache" CCACHE_MAXSIZE=3G CCACHE_BASEDIR="$PWD" CCACHE_COMPRESS=1
           ccache -z >/dev/null
           clang --version | head -n1
+          pahole --version
 
           # dist/kernel -> "kernel" artifact, dist/modules -> "modules", dist/boot -> "boot-img"
           mkdir -p dist/kernel dist/modules dist/boot

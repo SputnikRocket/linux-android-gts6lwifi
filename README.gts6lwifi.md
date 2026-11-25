@@ -119,7 +119,9 @@ make O=out ARCH=arm64 LLVM=1 -j$(nproc) Image modules \
 
 Packaging into `Image-dtb`, `boot.img` and `dtbo.img` is the Python in the
 workflow's "Build kernel" and "Build boot.img and dtbo.img" steps. Host packages
-needed: `bc bison flex libssl-dev libelf-dev libdw-dev dwarves cpio kmod`.
+needed: `bc bison flex libssl-dev libelf-dev libdw-dev cpio kmod`, plus pahole
+1.26 or newer for BTF. Ubuntu 24.04's 1.25 fails on this kernel ("Reached the
+limit of per-CPU variables"). The workflow builds v1.30 from source.
 
 ### Config notes
 

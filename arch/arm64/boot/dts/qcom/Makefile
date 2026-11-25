@@ -362,8 +362,9 @@ dtb-$(CONFIG_ARCH_QCOM)	+= sm8150-microsoft-surface-duo.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sm8150-mtp.dtb
 # Samsung's bootloader applies a DTBO from the dtbo partition, and its
 # libufdt refuses to do so unless the base DTB carries __symbols__.
-DTC_FLAGS_sm8150-samsung-gts6lwifi := -@
-DTC_FLAGS_sm8150p-samsung-gts6lwifi := -@
+# -Wno-unit_address_vs_reg: the SoC bus is "soc", not "soc@0", for Android
+DTC_FLAGS_sm8150-samsung-gts6lwifi := -@ -Wno-unit_address_vs_reg
+DTC_FLAGS_sm8150p-samsung-gts6lwifi := -@ -Wno-unit_address_vs_reg
 dtb-$(CONFIG_ARCH_QCOM)	+= sm8150-samsung-gts6lwifi.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sm8150-sony-xperia-kumano-bahamut.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sm8150-sony-xperia-kumano-griffin.dtb

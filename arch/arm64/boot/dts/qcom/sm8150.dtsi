@@ -896,7 +896,12 @@
 		};
 	};
 
-	soc: soc@0 {
+	/*
+	 * ANDROID: "soc", as in Qualcomm's kernels, not "soc@0": vendor init
+	 * scripts reach storage and devices through /dev/block/platform/soc/
+	 * and /sys/devices/platform/soc/, and wait for them.
+	 */
+	soc: soc {
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges = <0 0 0 0 0x10 0>;

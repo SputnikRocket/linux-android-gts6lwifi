@@ -156,8 +156,17 @@ limit of per-CPU variables"). The workflow builds v1.30 from source.
 
 * GKI builds binder and ashmem in Rust, which needs Kleaf's Rust toolchain.
   Plain `make` builds use the C binder (with binderfs) and C ashmem, so the
-  result does not depend on the build machine. Every other `gki_defconfig`
-  option is unchanged.
+  result does not depend on the build machine.
+* android-mainline's `gki_defconfig` turns on lockdep (`PROVE_LOCKING` and
+  the lock debugging it selects); the fragment turns it off, as it slows
+  the whole kernel down. Its KASAN is the hardware tag based one, which does
+  nothing on this CPU (no MTE). Every other `gki_defconfig` option is
+  unchanged.
+* The SoC bus node is `soc`, as in Qualcomm's kernels, not mainline's
+  `soc@0`: Samsung's vendor init scripts wait for
+  `/dev/block/platform/soc/1d84000.ufshc` and mount everything else through
+  the `/dev/block/bootdevice` link they make to it. `androidboot.boot_devices`
+  is `soc/1d84000.ufshc` to match.
 * `CONFIG_CMDLINE_FROM_BOOTLOADER` is set, so GKI's built-in command line
   (including `arm64.no32bit_el0`) is ignored whenever the bootloader passes
   one. Samsung's always does, so 32-bit apps keep working.

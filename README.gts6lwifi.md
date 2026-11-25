@@ -29,6 +29,8 @@ The first commit is an unmodified snapshot of
 | `Input: add STMicroelectronics FTS1BA90A` (+ binding) | driver for the touchscreen |
 | `...: Enable the panel and touchscreen` | DSI/panel/touch nodes in the DT, plus the matching config |
 | `extcon: Add Silicon Mitus SM5705 MUIC` (+ binding) | connects the USB D+/D- lines, which the stock kernel leaves disconnected; the DT node and config follow |
+| `ANDROID: arm64: Raise COMMAND_LINE_SIZE to 4096` | the bootloader appends about 2000 characters, past the 2047 upstream keeps |
+| `ANDROID: usb: gadget: Skip the uevent hook for legacy gadgets` | the USB serial console build warned in `android_set_connected()` |
 | `ANDROID: soc: qcom: rpmh: Skip reads on SoCs that hang on them` | SM8150's RPMh never answers the regulator read-back that 7.3 added, which hung every RPMh regulator (and so storage, USB and the display) |
 | `ANDROID: misc: Add gts6lwifi boot diagnostics` | optional timed restart into recovery that first saves the kernel log to the `debug` partition; the log also goes to Samsung's RAM log buffer |
 | `.github/workflows/build-kernel.yml` | builds `Image`, modules, `boot.img`, `dtbo.img` and an Odin tar |

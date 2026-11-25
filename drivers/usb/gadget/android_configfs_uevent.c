@@ -233,6 +233,10 @@ static void __android_set_connected(struct android_uevent_opts *opts,
 {
 	unsigned long flags;
 
+	/* Only configfs gadgets have the uevent work: not legacy ones */
+	if (!opts->work.func)
+		return;
+
 	spin_lock_irqsave(&opts_lock, flags);
 	// Don't send the uevent if connected state is not changed
 	if (opts->connected != connected) {
@@ -246,6 +250,9 @@ static void __android_set_configured(struct android_uevent_opts *opts,
 		bool configured)
 {
 	unsigned long flags;
+
+	if (!opts->work.func)
+		return;
 
 	spin_lock_irqsave(&opts_lock, flags);
 	// Don't send the uevent if configure state is not changed

@@ -550,8 +550,14 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		/*
+		 * WCN3998 CH0 (Bluetooth and Wi-Fi). Neither of their drivers
+		 * asks for a voltage, and with a range the regulator core
+		 * doesn't set one either, so RPMh got no vote for it at all;
+		 * stock runs it at 3.312 V.
+		 */
 		vreg_l11c_3p3: ldo11 {
-			regulator-min-microvolt = <3000000>;
+			regulator-min-microvolt = <3312000>;
 			regulator-max-microvolt = <3312000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};

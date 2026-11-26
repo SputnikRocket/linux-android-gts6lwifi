@@ -80,12 +80,11 @@ MODULE_PARM_DESC(stock_init,
 		 "Initialise the panel with the stock command list byte for byte: AOR for 360 nits, no tear effect command");
 
 /*
- * Reading the panel goes through a bus turnaround, which the MSM DSI host
- * does not keep clear of command mode frames, and the first modeset runs
- * inside this driver's probe (from mipi_dsi_attach()). So read once right
- * after Display On, before the first frame, and the rest only seconds
- * later. Off by default: a read that went wrong there once kept the probe
- * from finishing, and storage and USB from probing after it.
+ * Reading the panel goes through a bus turnaround, and the first modeset
+ * runs inside this driver's probe (from mipi_dsi_attach()): reads there
+ * have kept the probe from finishing, and storage and USB from probing
+ * after it, more than once. So read only from a work item, seconds after
+ * Display On. Off by default.
  */
 static bool status_log;
 module_param(status_log, bool, 0444);
@@ -99,13 +98,14 @@ MODULE_PARM_DESC(status_log,
  * own state after reset. natural maps it to sRGB, but also moves the white
  * point to a warmer one, which Samsung's driver then corrects for each
  * panel from its measured colour coordinates (not done here), so it looks
- * tinted. natural_cool, the default, is natural's sRGB gamut with the
- * panel's own white point, as in auto.
+ * tinted. natural_cool is natural's sRGB gamut with the panel's own white
+ * point, as in auto; on the tablet it looks darker than auto rather than
+ * less saturated, so auto is the default.
  */
-static char *screen_mode = "natural_cool";
+static char *screen_mode = "auto";
 module_param(screen_mode, charp, 0644);
 MODULE_PARM_DESC(screen_mode,
-		 "Colour mode: natural_cool (sRGB gamut, the panel's white; default), or one of Samsung's for the UI: auto (Samsung's default, \"Vivid\"), natural (sRGB), standard, dynamic, movie; or off (the DDI's own state after reset). Applied each time the panel is switched on");
+		 "Colour mode: Samsung's for the UI, auto (Samsung's default, \"Vivid\"; default), natural (sRGB), standard, dynamic, movie; natural_cool (sRGB gamut, the panel's white); or off (the DDI's own state after reset). Applied each time the panel is switched on");
 
 /* When to read the panel's status again, in ms after Display On */
 static const unsigned int amsa05rb06_status_ms[] = {
@@ -357,10 +357,10 @@ static const struct ana38401_mdnie_mode {
 #define ANA38401_MDNIE_MODE(n, ...) { #n, \
 	ana38401_mdnie_##n##_1, sizeof(ana38401_mdnie_##n##_1), \
 	ana38401_mdnie_##n##_2, sizeof(ana38401_mdnie_##n##_2), __VA_ARGS__ }
+	ANA38401_MDNIE_MODE(auto),
 	{ "natural_cool",
 	  ana38401_mdnie_natural_1, sizeof(ana38401_mdnie_natural_1),
 	  ana38401_mdnie_natural_2, sizeof(ana38401_mdnie_natural_2), true },
-	ANA38401_MDNIE_MODE(auto),
 	ANA38401_MDNIE_MODE(natural),
 	ANA38401_MDNIE_MODE(standard),
 	ANA38401_MDNIE_MODE(dynamic),
@@ -556,6 +556,15 @@ static void amsa05rb06_status_work(struct work_struct *work)
 	unsigned int next;
 	s64 now;
 
+	if (ctx->status_step == 0) {
+		struct mipi_dsi_device *dsi = ctx->dsi[0];
+
+		dev_info(&dsi->dev, "status: IDs %d %d %d\n",
+			 amsa05rb06_read_reg(dsi, 0xda),
+			 amsa05rb06_read_reg(dsi, 0xdb),
+			 amsa05rb06_read_reg(dsi, 0xdc));
+		amsa05rb06_log_calibration(ctx);
+	}
 	amsa05rb06_status_log(ctx);
 
 	if (++ctx->status_step >= ARRAY_SIZE(amsa05rb06_status_ms))
@@ -567,23 +576,14 @@ static void amsa05rb06_status_work(struct work_struct *work)
 			      msecs_to_jiffies(next > now ? next - now : 0));
 }
 
-/* Called from .enable, right after Display On and before the first frame */
+/* Called from .enable, right after Display On: no reads here (see above) */
 static void amsa05rb06_status_start(struct amsa05rb06 *ctx)
 {
-	struct mipi_dsi_device *dsi = ctx->dsi[0];
-
 	if (!status_log)
 		return;
 
 	ctx->display_on = ktime_get();
 	ctx->status_step = 0;
-
-	dev_info(&dsi->dev, "status: IDs %d %d %d\n",
-		 amsa05rb06_read_reg(dsi, 0xda),
-		 amsa05rb06_read_reg(dsi, 0xdb),
-		 amsa05rb06_read_reg(dsi, 0xdc));
-	amsa05rb06_log_calibration(ctx);
-	amsa05rb06_status_log(ctx);
 
 	schedule_delayed_work(&ctx->status_work,
 			      msecs_to_jiffies(amsa05rb06_status_ms[0]));

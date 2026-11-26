@@ -94,16 +94,18 @@ MODULE_PARM_DESC(status_log,
 
 /*
  * The DDI's colour engine (Samsung's mDNIe), with Samsung's modes. auto is
- * Samsung's default ("Vivid"), and on this tablet looks the same as the
- * DDI's own state after reset. The sRGB modes (natural, standard, dynamic)
- * move the white point to a warmer one; Samsung's driver then corrects it
- * for each panel from its measured colour coordinates, which this one does
- * not, so they look warmer than they should.
+ * Samsung's default ("Vivid"): the panel's native wide gamut, which shows
+ * sRGB content too saturated, and on this tablet the same as the DDI's
+ * own state after reset. natural maps it to sRGB, but also moves the white
+ * point to a warmer one, which Samsung's driver then corrects for each
+ * panel from its measured colour coordinates (not done here), so it looks
+ * tinted. natural_cool, the default, is natural's sRGB gamut with the
+ * panel's own white point, as in auto.
  */
-static char *screen_mode = "auto";
+static char *screen_mode = "natural_cool";
 module_param(screen_mode, charp, 0644);
 MODULE_PARM_DESC(screen_mode,
-		 "Colour mode, Samsung's for the UI: auto (Samsung's default, \"Vivid\"), natural (sRGB), standard, dynamic, movie, or off (the DDI's own state after reset). Applied each time the panel is switched on");
+		 "Colour mode: natural_cool (sRGB gamut, the panel's white; default), or one of Samsung's for the UI: auto (Samsung's default, \"Vivid\"), natural (sRGB), standard, dynamic, movie; or off (the DDI's own state after reset). Applied each time the panel is switched on");
 
 /* When to read the panel's status again, in ms after Display On */
 static const unsigned int amsa05rb06_status_ms[] = {
@@ -122,6 +124,7 @@ struct amsa05rb06 {
 	ktime_t display_on;
 	ktime_t reset_released;
 	bool prepared;
+	bool calibration_logged;
 	/* handover: on as the bootloader left it, so send it nothing */
 	bool handed_over;
 };
@@ -340,16 +343,23 @@ static const u8 ana38401_mdnie_auto_2[] = {
 	0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0xff,
 };
 
+/* The white point (ascr_Wr, Wg, Wb), every other byte of the first part */
+#define ANA38401_MDNIE_WHITE	50
+
 static const struct ana38401_mdnie_mode {
 	const char *name;
 	const u8 *scr;
 	size_t scr_len;
 	const u8 *ctrl;
 	size_t ctrl_len;
+	bool panel_white;	/* keep the panel's white point (ff ff ff) */
 } ana38401_mdnie_modes[] = {
-#define ANA38401_MDNIE_MODE(n) { #n, \
+#define ANA38401_MDNIE_MODE(n, ...) { #n, \
 	ana38401_mdnie_##n##_1, sizeof(ana38401_mdnie_##n##_1), \
-	ana38401_mdnie_##n##_2, sizeof(ana38401_mdnie_##n##_2) }
+	ana38401_mdnie_##n##_2, sizeof(ana38401_mdnie_##n##_2), __VA_ARGS__ }
+	{ "natural_cool",
+	  ana38401_mdnie_natural_1, sizeof(ana38401_mdnie_natural_1),
+	  ana38401_mdnie_natural_2, sizeof(ana38401_mdnie_natural_2), true },
 	ANA38401_MDNIE_MODE(auto),
 	ANA38401_MDNIE_MODE(natural),
 	ANA38401_MDNIE_MODE(standard),
@@ -364,6 +374,7 @@ static void amsa05rb06_set_screen_mode(struct amsa05rb06 *ctx,
 	static const u8 sel_scr[] = { ANA38401_GPARA, 0xa8 };
 	static const u8 sel_ctrl[] = { ANA38401_GPARA, 0x42 };
 	const struct ana38401_mdnie_mode *mode = &ana38401_mdnie_modes[0];
+	u8 scr[sizeof(ana38401_mdnie_natural_1)];
 	char name[16];
 	int i;
 
@@ -383,8 +394,14 @@ static void amsa05rb06_set_screen_mode(struct amsa05rb06 *ctx,
 		dev_warn(&ctx->dsi[0]->dev, "unknown screen_mode %s, using %s\n",
 			 name, mode->name);
 
+	memcpy(scr, mode->scr, min(mode->scr_len, sizeof(scr)));
+	if (mode->panel_white)
+		for (i = 0; i < 3; i++)
+			scr[ANA38401_MDNIE_WHITE + 2 * i] = 0xff;
+
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, sel_scr, sizeof(sel_scr));
-	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, mode->scr, mode->scr_len);
+	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, scr,
+					min(mode->scr_len, sizeof(scr)));
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, sel_ctrl, sizeof(sel_ctrl));
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, mode->ctrl, mode->ctrl_len);
 }
@@ -432,6 +449,80 @@ static int amsa05rb06_read_reg(struct mipi_dsi_device *dsi, u8 cmd)
 		return ret;
 
 	return ret == 1 ? val : -EIO;
+}
+
+/*
+ * Reads of the DDI's calibration, as Samsung's driver does them: in parts
+ * of at most 10 bytes, each with the offset into the register set first
+ * (0xb0) and the length as the second parameter of a generic read.
+ */
+#define ANA38401_READ_MAX	10
+
+static int ana38401_read(struct mipi_dsi_device *dsi, u8 reg, u8 offset,
+			 u8 *buf, size_t len)
+{
+	size_t done = 0;
+
+	while (done < len) {
+		u8 n = min_t(size_t, len - done, ANA38401_READ_MAX);
+		const u8 pos[] = { ANA38401_GPARA, offset + done };
+		const u8 params[] = { reg, n };
+		ssize_t ret;
+
+		ret = mipi_dsi_dcs_write_buffer(dsi, pos, sizeof(pos));
+		if (ret < 0)
+			return ret;
+
+		ret = mipi_dsi_generic_read(dsi, params, sizeof(params),
+					    buf + done, n);
+		if (ret < 0)
+			return ret;
+		if (ret != n)
+			return -EIO;
+
+		done += n;
+	}
+
+	return 0;
+}
+
+/*
+ * Bring-up: the panel's own calibration, which Samsung's driver reads at
+ * the first power-on: the gamma MTP and HBM gamma (for its smart dimming),
+ * the white point's measured colour coordinates (for its mDNIe white
+ * point correction), the ELVSS setting, and the manufacture date and cell
+ * ID. Logged once, with status_log.
+ */
+static void amsa05rb06_log_calibration(struct amsa05rb06 *ctx)
+{
+	static const struct {
+		const char *name;
+		u8 reg, offset, len;
+	} reads[] = {
+		{ "gamma MTP", 0xd8, 0x5a, 33 },
+		{ "HBM gamma", 0xd4, 0x5b, 33 },
+		{ "white coordinates", 0xd8, 0x7b, 4 },
+		{ "ELVSS", 0xd2, 0x70, 1 },
+		{ "date and cell ID", 0xd8, 0x86, 7 },
+	};
+	struct mipi_dsi_device *dsi = ctx->dsi[0];
+	u8 buf[33];
+	int i, ret;
+
+	if (ctx->calibration_logged)
+		return;
+	ctx->calibration_logged = true;
+
+	for (i = 0; i < ARRAY_SIZE(reads); i++) {
+		ret = ana38401_read(dsi, reads[i].reg, reads[i].offset, buf,
+				    reads[i].len);
+		if (ret)
+			dev_info(&dsi->dev, "calibration: %s: read failed: %d\n",
+				 reads[i].name, ret);
+		else
+			dev_info(&dsi->dev, "calibration: %s: %*ph\n",
+				 reads[i].name, reads[i].len, buf);
+	}
 }
 
 /*
@@ -491,6 +582,7 @@ static void amsa05rb06_status_start(struct amsa05rb06 *ctx)
 		 amsa05rb06_read_reg(dsi, 0xda),
 		 amsa05rb06_read_reg(dsi, 0xdb),
 		 amsa05rb06_read_reg(dsi, 0xdc));
+	amsa05rb06_log_calibration(ctx);
 	amsa05rb06_status_log(ctx);
 
 	schedule_delayed_work(&ctx->status_work,

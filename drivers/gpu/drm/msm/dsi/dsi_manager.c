@@ -332,7 +332,7 @@ void msm_dsi_manager_tpg_enable(void)
 	}
 }
 
-/* With dsi_defer_hs_clock: start the continuous clock, on both bonded links */
+/* Start a deferred continuous clock, on both links of a bonded pair */
 static void dsi_mgr_start_hs_clock(int id)
 {
 	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);

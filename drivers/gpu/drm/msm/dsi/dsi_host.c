@@ -35,15 +35,16 @@
 #define DSI_RESET_TOGGLE_DELAY_MS 20
 
 /*
- * Bring-up switch. Some panels (Anapass DDIs) need the clock lane in LP-11
- * while they come out of reset, and the continuous HS clock only once they
- * are ready for commands: keep the clock lane out of HS at power on and
- * switch it to continuous HS just before the first transfer.
+ * Some panels (Anapass DDIs) need the clock lane in LP-11 while they come
+ * out of reset, and the continuous HS clock only once they are ready for
+ * commands. For them (qcom,defer-continuous-clock), keep the clock lane out
+ * of HS at power on and switch it to continuous HS just before the first
+ * transfer. The parameter does the same for every DSI host, to try it out.
  */
 static bool dsi_defer_hs_clock;
 module_param(dsi_defer_hs_clock, bool, 0444);
 MODULE_PARM_DESC(dsi_defer_hs_clock,
-		 "Start the continuous DSI HS clock at the first command, not at power on");
+		 "Start the continuous DSI HS clock at the first command, not at power on, on every DSI host");
 
 static int dsi_populate_dsc_params(struct msm_dsi_host *msm_host, struct drm_dsc_config *dsc);
 
@@ -199,7 +200,9 @@ struct msm_dsi_host {
 	bool enabled;
 	int irq;
 
-	/* Continuous clock not started yet (dsi_defer_hs_clock) */
+	/* Start the continuous clock at the first transfer */
+	bool defer_hs_clock;
+	/* ... and it has not been started yet */
 	bool hs_clock_pending;
 	struct msm_dsi_phy *hs_clock_phy;
 };
@@ -952,7 +955,7 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 	dsi_write(msm_host, REG_DSI_LANE_SWAP_CTRL,
 		  DSI_LANE_SWAP_CTRL_DLN_SWAP_SEL(msm_host->dlane_swap));
 
-	if (!(flags & MIPI_DSI_CLOCK_NON_CONTINUOUS) && !dsi_defer_hs_clock) {
+	if (!(flags & MIPI_DSI_CLOCK_NON_CONTINUOUS) && !msm_host->defer_hs_clock) {
 		dsi_set_continuous_clock(msm_host, phy, true);
 	} else {
 		/*
@@ -1966,6 +1969,9 @@ static int dsi_host_parse_dt(struct msm_dsi_host *msm_host)
 	const char *te_source;
 	int ret = 0;
 
+	msm_host->defer_hs_clock = dsi_defer_hs_clock ||
+		of_property_read_bool(np, "qcom,defer-continuous-clock");
+
 	/*
 	 * Get the endpoint of the output port of the DSI host. In our case,
 	 * this is mapped to port number with reg = 1. Don't return an error if
@@ -2470,7 +2476,7 @@ void msm_dsi_host_disable_irq(struct mipi_dsi_host *host)
 	disable_irq(msm_host->irq);
 }
 
-/* Start a continuous clock that dsi_defer_hs_clock held back at power on */
+/* Start a continuous clock that was held back at power on */
 void msm_dsi_host_start_hs_clock(struct mipi_dsi_host *host)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);

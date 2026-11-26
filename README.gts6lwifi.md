@@ -290,8 +290,11 @@ the tablet.
   stuck is named every 15 s ("... is busy, probably stuck in probe"), and
   `hung_task_timeout_secs=20` prints the stack of a task blocked that long.
   One build (CI run 55) hung that way every time, with the PM8150
-  regulators never bound and a probe stuck; the next one, with only the
-  splash's supply moved out of the way, booted: it depends on timing.
+  regulators never bound and a probe stuck, while the splash still held
+  the PM8150's L14A. The same kernel booted every time with the DT that no
+  longer lists it, and the build before it booted with the old DT: a race,
+  with simpledrm probing as the PM8150 regulators come up as one side of
+  it.
 * **Serial**. `ttyMSM0` on GPIO 85/86, 115200n8.
 * If the bootloader rejects the image, its screen message tells which step
   failed: no matching DTB, DTBO not found or not applied, or the

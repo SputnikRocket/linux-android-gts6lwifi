@@ -31,6 +31,8 @@
 #include <drm/drm_panel.h>
 #include <drm/drm_probe_helper.h>
 
+#include "panel-samsung-amsa05rb06-dimming.h"
+
 /* ANA38401 registers */
 #define ANA38401_GPARA		0xb0	/* offset for the next 0xb2 write */
 #define ANA38401_GPARA_DATA	0xb2
@@ -63,7 +65,7 @@
  * V255[7:0], V3, V255[8], VT. The panel's factory calibration (MTP) has
  * the same layout.
  */
-#define ANA38401_GAMMA_LEN	33
+#define ANA38401_GAMMA_LEN	ANA38401_DIMMING_GAMMA_LEN
 #define ANA38401_MTP		0xd8	/* at offset 0x5a */
 #define ANA38401_MTP_OFFSET	0x5a
 
@@ -84,6 +86,18 @@ static bool mtp_gamma = true;
 module_param(mtp_gamma, bool, 0644);
 MODULE_PARM_DESC(mtp_gamma,
 		 "Use the gamma from the panel's factory calibration (default), not the uncalibrated placeholder. Applied each time the panel is switched on");
+
+/*
+ * Samsung's smart dimming: each of its 65 brightness levels has a gamma
+ * computed from the calibration (for gamma 2.15 below 360 nits, with
+ * corrections for each level), and its own AOR and ELVSS. Without it, the
+ * 360-nit gamma is dimmed with the AOR alone, which turns the greys red at
+ * mid brightness and black at the bottom.
+ */
+static bool smart_dimming = true;
+module_param(smart_dimming, bool, 0644);
+MODULE_PARM_DESC(smart_dimming,
+		 "Set each brightness level's own gamma, AOR and ELVSS, as Samsung's driver does (default), not the 360-nit gamma dimmed with the AOR. Needs mtp_gamma; applied at the next brightness change");
 
 /* Reading the calibration after the first Display On, from a work item */
 #define AMSA05RB06_CALIB_DELAY_MS	1000
@@ -158,9 +172,12 @@ struct amsa05rb06 {
 	struct delayed_work calib_work;
 	/* Command sequences (0xb0 offset, then a write or read) stay whole */
 	struct mutex cmd_lock;
-	/* The gamma for 360 nits; brightness is set with the AOR */
+	/* The gamma for 360 nits, from the calibration */
 	u8 gamma[ANA38401_GAMMA_LEN];
 	bool gamma_calibrated;
+	/* ... and for each brightness level (ana38401_levels) */
+	u8 level_gamma[ANA38401_DIMMING_LEVELS][ANA38401_GAMMA_LEN];
+	bool level_gamma_ok;
 	ktime_t display_on;
 	ktime_t reset_released;
 	bool prepared;
@@ -240,13 +257,6 @@ static void amsa05rb06_write_aor(struct mipi_dsi_multi_context *dsi_ctx,
 	const u8 cmd[] = { ANA38401_AOR, aor >> 8, 0x00, aor & 0xff };
 
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, cmd, sizeof(cmd));
-}
-
-static void amsa05rb06_set_aor(struct mipi_dsi_multi_context *dsi_ctx,
-			       unsigned int nits)
-{
-	amsa05rb06_write_aor(dsi_ctx, nits);
-	ana38401_gpara_write(dsi_ctx, ANA38401_GP_UPDATE, 0x01);
 }
 
 static void amsa05rb06_reset(struct amsa05rb06 *ctx)
@@ -477,23 +487,68 @@ static void amsa05rb06_set_screen_mode(struct amsa05rb06 *ctx,
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, mode->ctrl, mode->ctrl_len);
 }
 
+static void ana38401_write_gamma(struct mipi_dsi_multi_context *dsi_ctx,
+				 const u8 *gamma)
+{
+	u8 cmd[1 + ANA38401_GAMMA_LEN] = { ANA38401_GAMMA };
+
+	memcpy(&cmd[1], gamma, ANA38401_GAMMA_LEN);
+	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, cmd, sizeof(cmd));
+}
+
+/* Samsung's level for a brightness: the brightest one not above it */
+static unsigned int ana38401_level(unsigned int nits)
+{
+	unsigned int i;
+
+	for (i = ANA38401_DIMMING_LEVELS - 1; i > 0; i--)
+		if (ana38401_levels[i].cd <= nits)
+			break;
+
+	return i;
+}
+
+/* Gamma, AOR and ELVSS for a brightness, latched together */
+static void amsa05rb06_set_brightness(struct amsa05rb06 *ctx,
+				      struct mipi_dsi_multi_context *dsi_ctx,
+				      unsigned int nits)
+{
+	bool calibrated = mtp_gamma && ctx->gamma_calibrated;
+
+	if (calibrated && smart_dimming && ctx->level_gamma_ok) {
+		unsigned int i = ana38401_level(nits);
+		const u8 aor[] = {
+			ANA38401_AOR, ana38401_levels[i].aor >> 8, 0x00,
+			ana38401_levels[i].aor & 0xff,
+		};
+
+		ana38401_write_gamma(dsi_ctx, ctx->level_gamma[i]);
+		mipi_dsi_dcs_write_buffer_multi(dsi_ctx, aor, sizeof(aor));
+		ana38401_gpara_write(dsi_ctx, ANA38401_GP_ELVSS,
+				     ana38401_levels[i].elvss);
+	} else {
+		ana38401_write_gamma(dsi_ctx, calibrated ? ctx->gamma :
+				     ana38401_gamma_nominal);
+		amsa05rb06_write_aor(dsi_ctx, nits);
+		ana38401_gpara_write(dsi_ctx, ANA38401_GP_ELVSS, 0x0f);
+	}
+	ana38401_gpara_write(dsi_ctx, ANA38401_GP_UPDATE, 0x01);
+}
+
 static int amsa05rb06_on(struct amsa05rb06 *ctx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi[0] };
-	u8 gamma[1 + ANA38401_GAMMA_LEN] = { ANA38401_GAMMA };
-
-	memcpy(&gamma[1], mtp_gamma && ctx->gamma_calibrated ?
-	       ctx->gamma : ana38401_gamma_nominal, ANA38401_GAMMA_LEN);
 
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_TSP_SYNC, 0x15);
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_GAMMA_IDX, 0x04);
-	mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, gamma, sizeof(gamma));
-	if (stock_init)
+	if (stock_init) {
+		ana38401_write_gamma(&dsi_ctx, ana38401_gamma_nominal);
 		amsa05rb06_write_aor(&dsi_ctx, AMSA05RB06_MAX_NITS);
-	else
-		amsa05rb06_set_aor(&dsi_ctx,
-				   backlight_get_brightness(ctx->panel.backlight));
-	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_ELVSS, 0x0f);
+		ana38401_gpara_write(&dsi_ctx, ANA38401_GP_ELVSS, 0x0f);
+	} else {
+		amsa05rb06_set_brightness(ctx, &dsi_ctx,
+					  backlight_get_brightness(ctx->panel.backlight));
+	}
 	/* ACL off: 16 frame average, 60% start */
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_ACL_FRAMES, 0x04);
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_ACL_START, 0x99);
@@ -595,7 +650,6 @@ static void amsa05rb06_calib_work(struct work_struct *work)
 					      struct amsa05rb06, calib_work);
 	struct mipi_dsi_device *dsi = ctx->dsi[0];
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
-	u8 gamma[1 + ANA38401_GAMMA_LEN] = { ANA38401_GAMMA };
 	u8 mtp[ANA38401_GAMMA_LEN];
 	int ret;
 
@@ -621,9 +675,20 @@ static void amsa05rb06_calib_work(struct work_struct *work)
 	dev_info(&dsi->dev, "gamma from the panel's calibration: %*ph\n",
 		 ANA38401_GAMMA_LEN, ctx->gamma);
 
-	memcpy(&gamma[1], ctx->gamma, ANA38401_GAMMA_LEN);
-	mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, gamma, sizeof(gamma));
-	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_UPDATE, 0x01);
+	ret = ana38401_dimming_gamma(mtp, ctx->level_gamma);
+	if (ret)
+		dev_warn(&dsi->dev, "no smart dimming: %d\n", ret);
+	else if (memcmp(ctx->level_gamma[ANA38401_DIMMING_LEVELS - 1],
+			ctx->gamma, ANA38401_GAMMA_LEN))
+		dev_warn(&dsi->dev, "no smart dimming: its 360-nit gamma differs\n");
+	else
+		ctx->level_gamma_ok = true;
+	if (ctx->level_gamma_ok)
+		dev_info(&dsi->dev, "smart dimming: %u levels from the panel's calibration\n",
+			 ANA38401_DIMMING_LEVELS);
+
+	amsa05rb06_set_brightness(ctx, &dsi_ctx,
+				  backlight_get_brightness(ctx->panel.backlight));
 out:
 	mutex_unlock(&ctx->cmd_lock);
 }
@@ -874,7 +939,7 @@ static int amsa05rb06_bl_update_status(struct backlight_device *bl)
 	if (!ctx->prepared || ctx->handed_over)
 		return 0;
 
-	amsa05rb06_set_aor(&dsi_ctx, backlight_get_brightness(bl));
+	amsa05rb06_set_brightness(ctx, &dsi_ctx, backlight_get_brightness(bl));
 
 	return dsi_ctx.accum_err;
 }

@@ -183,22 +183,28 @@ limit of per-CPU variables"). The workflow builds v1.30 from source.
 Both drivers were written from Samsung's SM-T860 sources, and both work on
 the tablet.
 
-* **Panel** (`drivers/gpu/drm/panel/panel-samsung-amsa05rb06.c`). Power-up
-  follows the Anapass sequence from the stock driver: supplies, LP-11, reset
-  for 70 ms, wait for TCON_RDY (GPIO 140), init in HS, and Display On at least
-  220 ms after reset. The DDI needs the clock lane in LP-11 until it signals
-  TCON_RDY and the continuous HS clock from then on; otherwise it raises its
-  error flag after Display On, sends no TE and stays dark. The MSM DSI host
-  forces the clock lane into HS when it powers on, before the panel is reset,
-  so the DT sets `qcom,defer-continuous-clock` on both DSI hosts: they start
-  the continuous clock just before the first command (the
-  `msm.dsi_defer_hs_clock=1` parameter does the same for every DSI host).
-  Commands go over DSI0 only, so the DT bonds the links
-  without `qcom,sync-dual-dsi`. Global parameter writes are a short 0xb0
-  (offset) and a long 0xb2 (value), the packet types Samsung's tables use. Brightness only varies the AMOLED off ratio,
-  at the panel's 360-nit gamma calibration. It stays within the AOR range
-  Samsung's tables use. Samsung's MTP-based smart dimming, HBM, ACL and
-  mDNIe are not implemented.
+* **Panel** (`drivers/gpu/drm/panel/panel-samsung-amsa05rb06-core.c`).
+  Power-up follows the Anapass sequence from the stock driver: supplies,
+  LP-11, reset for 70 ms, wait for TCON_RDY (GPIO 140), init in HS, and
+  Display On at least 220 ms after reset. The DDI needs the clock lane in
+  LP-11 until it signals TCON_RDY and the continuous HS clock from then on;
+  otherwise it raises its error flag after Display On, sends no TE and stays
+  dark. The MSM DSI host forces the clock lane into HS when it powers on,
+  before the panel is reset, so the DT sets `qcom,defer-continuous-clock` on
+  both DSI hosts: they start the continuous clock just before the first
+  command (the `msm.dsi_defer_hs_clock=1` parameter does the same for every
+  DSI host). Commands go over DSI0 only, so the DT bonds the links without
+  `qcom,sync-dual-dsi`. Global parameter writes are a short 0xb0 (offset) and
+  a long 0xb2 (value), the packet types Samsung's tables use. Brightness and
+  colour follow Samsung's driver: 1 s after the first power-on, the driver
+  reads the panel's factory calibration (MTP) and computes its gamma for each
+  of Samsung's 65 brightness levels with Samsung's smart dimming
+  (`panel-samsung-amsa05rb06-dimming.c`, Samsung's code, byte for byte the
+  same results), and sets each level's gamma, AOR and ELVSS. Until then, and
+  with `mtp_gamma=0`, it uses the placeholder gamma of Samsung's init
+  commands, which leaves the dark greys black. The DDI's colour engine (mDNIe)
+  gets the stock calibration's sRGB mode (`screen_mode`). HBM, ACL and
+  Samsung's per-panel white point correction are not implemented.
 * **Touchscreen** (`drivers/input/touchscreen/fts1ba90a.c`). The controller
   reports in portrait coordinates (1600x2560), while the panel scans
   landscape (2560x1600): `touchscreen-inverted-x` and

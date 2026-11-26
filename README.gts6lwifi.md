@@ -6,12 +6,11 @@ Snapdragon 855 / SM8150). The Samsung 4.14 kernel in
 [linux-samsung-gts6lwifi](https://github.com/SputnikRocket/linux-samsung-gts6lwifi)
 served as the hardware reference.
 
-> **Status: boots on hardware.** With the stock Android 12 system and vendor it
-> gets to Android's second stage: storage (UFS, microSD), USB and the
-> touchscreen come up. The panel gets frames but does not show a correct
-> picture yet. The userspace this kernel is meant for is AOSP with mainline
-> graphics:
-> [AOSP-android_device_samsung_gts6lwifi](https://github.com/SputnikRocket/AOSP-android_device_samsung_gts6lwifi).
+> **Status: boots on hardware, to the Android 17 lock screen.** The
+> userspace this kernel is meant for is AOSP with mainline graphics
+> ([AOSP-android_device_samsung_gts6lwifi](https://github.com/SputnikRocket/AOSP-android_device_samsung_gts6lwifi)):
+> with it, the panel, the GPU (Mesa freedreno), storage (UFS, microSD), USB
+> (adb) and the touchscreen work.
 > [Debugging](#debugging) shows how to read a boot's log without a screen.
 
 ## What is in the tree
@@ -45,7 +44,7 @@ The first commit is an unmodified snapshot of
 | Memory map | Samsung's layout: TZ region, PIL carve-outs, TIMA/RKP, sec_debug, plog |
 | UFS (system), microSD | yes |
 | USB | USB 2.0 device mode (adb/MTP gadget). D+/D- run through the SM5705 MUIC, which `extcon-sm5705` connects to the USB PHY (no cable detection yet). The S2MM005 Type-C/PD chip has no mainline driver |
-| Display | `panel-samsung-amsa05rb06` (Anapass ANA38401 DDI) on bonded DSI0/DSI1, command mode, 2560x1600@60 via the MSM DPU. Brightness 2–360 nits (`/sys/class/backlight`). The bootloader splash is a `simple-framebuffer` until the MSM driver takes over |
+| Display | yes: `panel-samsung-amsa05rb06` (Anapass ANA38401 DDI) on bonded DSI0/DSI1, command mode with the TE signal, 2560x1600@60 via the MSM DPU. Brightness 2–360 nits (`/sys/class/backlight`). The bootloader splash is a `simple-framebuffer` until the MSM driver takes over |
 | Touchscreen | `fts1ba90a` (STM FTS1BA90A, Samsung firmware) on i2c17, 10 fingers |
 | Power / volume keys, cover hall sensor | yes |
 | Debug UART | `uart2` (GPIO 85/86) as `ttyMSM0` |
@@ -173,20 +172,29 @@ limit of per-CPU variables"). The workflow builds v1.30 from source.
 * `CONFIG_CMDLINE_FROM_BOOTLOADER` is set, so GKI's built-in command line
   (including `arm64.no32bit_el0`) is ignored whenever the bootloader passes
   one. Samsung's always does, so 32-bit apps keep working.
+* The bootloader reads only the boot image header's `cmdline` field, at most
+  511 bytes, and ignores `extra_cmdline`, where `mkbootimg` puts the rest of
+  a longer command line. The workflow refuses a longer one.
 * The command line's `clk_ignore_unused pd_ignore_unused` keeps the
   bootloader's display pipeline (and with it the splash framebuffer) alive
   until the MSM display driver takes over.
 
 ## Panel and touchscreen notes
 
-Both drivers were written from Samsung's SM-T860 sources. On the tablet both
-probe, and the panel goes through its power-on sequence and takes frames from
-the display engine, but does not show a correct picture yet.
+Both drivers were written from Samsung's SM-T860 sources, and both work on
+the tablet.
 
 * **Panel** (`drivers/gpu/drm/panel/panel-samsung-amsa05rb06.c`). Power-up
   follows the Anapass sequence from the stock driver: supplies, LP-11, reset
   for 70 ms, wait for TCON_RDY (GPIO 140), init in HS, and Display On at least
-  220 ms after reset. Commands go over DSI0 only, so the DT bonds the links
+  220 ms after reset. The DDI needs the clock lane in LP-11 until it signals
+  TCON_RDY and the continuous HS clock from then on; otherwise it raises its
+  error flag after Display On, sends no TE and stays dark. The MSM DSI host
+  forces the clock lane into HS when it powers on, before the panel is reset,
+  so the DT sets `qcom,defer-continuous-clock` on both DSI hosts: they start
+  the continuous clock just before the first command (the
+  `msm.dsi_defer_hs_clock=1` parameter does the same for every DSI host).
+  Commands go over DSI0 only, so the DT bonds the links
   without `qcom,sync-dual-dsi`. Global parameter writes are a short 0xb0
   (offset) and a long 0xb2 (value), the packet types Samsung's tables use. Brightness only varies the AMOLED off ratio,
   at the panel's 360-nit gamma calibration. It stays within the AOR range

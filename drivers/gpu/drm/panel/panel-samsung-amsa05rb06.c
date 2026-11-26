@@ -100,12 +100,15 @@ MODULE_PARM_DESC(status_log,
  * panel from its measured colour coordinates (not done here), so it looks
  * tinted. natural_cool is natural's sRGB gamut with the panel's own white
  * point, as in auto; on the tablet it looks darker than auto rather than
- * less saturated, so auto is the default.
+ * less saturated. srgb, the default, is the default mode of the stock
+ * display calibration instead (Qualcomm's QDCM, in the stock vendor
+ * partition), which maps sRGB onto the panel's gamut without darkening the
+ * primaries as much, and leaves white and the greys alone.
  */
-static char *screen_mode = "auto";
+static char *screen_mode = "srgb";
 module_param(screen_mode, charp, 0644);
 MODULE_PARM_DESC(screen_mode,
-		 "Colour mode: Samsung's for the UI, auto (Samsung's default, \"Vivid\"; default), natural (sRGB), standard, dynamic, movie; natural_cool (sRGB gamut, the panel's white); or off (the DDI's own state after reset). Applied each time the panel is switched on");
+		 "Colour mode: srgb (the stock calibration's sRGB mode; default); Samsung's for the UI, auto (Samsung's default, \"Vivid\"), natural (sRGB), standard, dynamic, movie; natural_cool (natural's gamut, the panel's white); or off (the DDI's own state after reset). Applied each time the panel is switched on");
 
 /* When to read the panel's status again, in ms after Display On */
 static const unsigned int amsa05rb06_status_ms[] = {
@@ -343,8 +346,28 @@ static const u8 ana38401_mdnie_auto_2[] = {
 	0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0xff,
 };
 
-/* The white point (ascr_Wr, Wg, Wb), every other byte of the first part */
+/*
+ * The gamut mapping (SCR) in the first part: the colour each corner of the
+ * RGB cube is shown as, as pairs of red, green and blue values for cyan and
+ * red, magenta and green, yellow and blue, then white and black (ascr_Cr,
+ * Rr, Cg, Rg, Cb, Rb, Mr, Gr, ..., Wb, Kb). natural's first byte has
+ * linear_on, for interpolating between the corners in linear light.
+ */
+#define ANA38401_MDNIE_SCR	32
+#define ANA38401_MDNIE_SCR_LEN	24
 #define ANA38401_MDNIE_WHITE	50
+
+/*
+ * The stock calibration's default (sRGB) mode, as SCR corners: its 3D LUT
+ * (in linear light, between an sRGB decode and encode) applied to each
+ * corner. Its grey axis is the identity.
+ */
+static const u8 ana38401_scr_qdcm_srgb[ANA38401_MDNIE_SCR_LEN] = {
+	0x72, 0xef, 0xfa, 0x39, 0xfe, 0x28,	/* cyan, red */
+	0xec, 0x72, 0x2e, 0xfe, 0xf9, 0x4b,	/* magenta, green */
+	0xff, 0x10, 0xff, 0x00, 0x54, 0xf9,	/* yellow, blue */
+	0xff, 0x00, 0xff, 0x00, 0xff, 0x00,	/* white, black */
+};
 
 static const struct ana38401_mdnie_mode {
 	const char *name;
@@ -353,7 +376,12 @@ static const struct ana38401_mdnie_mode {
 	const u8 *ctrl;
 	size_t ctrl_len;
 	bool panel_white;	/* keep the panel's white point (ff ff ff) */
+	const u8 *scr_override;	/* other SCR corners */
 } ana38401_mdnie_modes[] = {
+	{ "srgb",
+	  ana38401_mdnie_natural_1, sizeof(ana38401_mdnie_natural_1),
+	  ana38401_mdnie_natural_2, sizeof(ana38401_mdnie_natural_2),
+	  .scr_override = ana38401_scr_qdcm_srgb },
 #define ANA38401_MDNIE_MODE(n, ...) { #n, \
 	ana38401_mdnie_##n##_1, sizeof(ana38401_mdnie_##n##_1), \
 	ana38401_mdnie_##n##_2, sizeof(ana38401_mdnie_##n##_2), __VA_ARGS__ }
@@ -367,6 +395,9 @@ static const struct ana38401_mdnie_mode {
 	ANA38401_MDNIE_MODE(movie),
 #undef ANA38401_MDNIE_MODE
 };
+
+static_assert(ANA38401_MDNIE_SCR + ANA38401_MDNIE_SCR_LEN <=
+	      sizeof(ana38401_mdnie_natural_1));
 
 static void amsa05rb06_set_screen_mode(struct amsa05rb06 *ctx,
 				       struct mipi_dsi_multi_context *dsi_ctx)
@@ -395,6 +426,9 @@ static void amsa05rb06_set_screen_mode(struct amsa05rb06 *ctx,
 			 name, mode->name);
 
 	memcpy(scr, mode->scr, min(mode->scr_len, sizeof(scr)));
+	if (mode->scr_override)
+		memcpy(&scr[ANA38401_MDNIE_SCR], mode->scr_override,
+		       ANA38401_MDNIE_SCR_LEN);
 	if (mode->panel_white)
 		for (i = 0; i < 3; i++)
 			scr[ANA38401_MDNIE_WHITE + 2 * i] = 0xff;

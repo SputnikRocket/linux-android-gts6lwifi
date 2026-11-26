@@ -17,6 +17,7 @@
 #include <linux/ktime.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/regulator/consumer.h>
@@ -56,6 +57,36 @@
 #define AMSA05RB06_AOR_MAX	0x18d
 #define AMSA05RB06_MAX_NITS	360
 #define AMSA05RB06_MIN_NITS	2
+
+/*
+ * The gamma register: per colour, V11, V23, V35, V51, V87, V151, V203,
+ * V255[7:0], V3, V255[8], VT. The panel's factory calibration (MTP) has
+ * the same layout.
+ */
+#define ANA38401_GAMMA_LEN	33
+#define ANA38401_MTP		0xd8	/* at offset 0x5a */
+#define ANA38401_MTP_OFFSET	0x5a
+
+/* Samsung's placeholder in its init commands: uncalibrated */
+static const u8 ana38401_gamma_nominal[ANA38401_GAMMA_LEN] = {
+	0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x80, 0x80, 0x00,
+	0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x80, 0x80, 0x00,
+	0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x80, 0x80, 0x00,
+};
+
+/*
+ * Samsung's init commands carry a placeholder gamma, which its driver
+ * replaces right after with one from the panel's calibration (with the
+ * gamma offset index at 4, the DDI does not add the calibration itself).
+ * With the placeholder, this panel shows its dark greys far too dark.
+ */
+static bool mtp_gamma = true;
+module_param(mtp_gamma, bool, 0644);
+MODULE_PARM_DESC(mtp_gamma,
+		 "Use the gamma from the panel's factory calibration (default), not the uncalibrated placeholder. Applied each time the panel is switched on");
+
+/* Reading the calibration after the first Display On, from a work item */
+#define AMSA05RB06_CALIB_DELAY_MS	1000
 
 /* Display On must not be sent earlier than this after reset (TCON_RDY) */
 #define AMSA05RB06_DISPLAY_ON_DELAY_MS	220
@@ -124,6 +155,12 @@ struct amsa05rb06 {
 	struct gpio_desc *err_fg_gpio;
 	struct delayed_work status_work;
 	unsigned int status_step;
+	struct delayed_work calib_work;
+	/* Command sequences (0xb0 offset, then a write or read) stay whole */
+	struct mutex cmd_lock;
+	/* The gamma for 360 nits; brightness is set with the AOR */
+	u8 gamma[ANA38401_GAMMA_LEN];
+	bool gamma_calibrated;
 	ktime_t display_on;
 	ktime_t reset_released;
 	bool prepared;
@@ -443,13 +480,10 @@ static void amsa05rb06_set_screen_mode(struct amsa05rb06 *ctx,
 static int amsa05rb06_on(struct amsa05rb06 *ctx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi[0] };
-	/* Neutral gamma offsets: the panel's 360-nit calibration */
-	static const u8 gamma[] = {
-		ANA38401_GAMMA,
-		0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x80, 0x80, 0x00,
-		0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x80, 0x80, 0x00,
-		0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x80, 0x80, 0x00,
-	};
+	u8 gamma[1 + ANA38401_GAMMA_LEN] = { ANA38401_GAMMA };
+
+	memcpy(&gamma[1], mtp_gamma && ctx->gamma_calibrated ?
+	       ctx->gamma : ana38401_gamma_nominal, ANA38401_GAMMA_LEN);
 
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_TSP_SYNC, 0x15);
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_GAMMA_IDX, 0x04);
@@ -518,6 +552,80 @@ static int ana38401_read(struct mipi_dsi_device *dsi, u8 reg, u8 offset,
 	}
 
 	return 0;
+}
+
+/* The MTP's offsets are sign and magnitude */
+static int ana38401_mtp_offset(u8 v)
+{
+	return v & 0x80 ? -(int)(v & 0x7f) : v;
+}
+
+/*
+ * The gamma at 360 nits, from the panel's calibration, as Samsung's
+ * gamma_cell_determine_max(): each grey point's value is 128 plus its
+ * offset, and V255's is 256 plus its offset (V255[8] holds the sign of the
+ * offset in the MTP, and bit 8 of the value in the gamma register).
+ */
+static void ana38401_gamma_from_mtp(const u8 *mtp, u8 *gamma)
+{
+	int c, i;
+
+	for (c = 0; c < 3; c++) {
+		const u8 *m = &mtp[c * 11];
+		u8 *g = &gamma[c * 11];
+		int v255 = 256 + (m[9] ? -m[7] : m[7]);
+
+		for (i = 0; i < 7; i++)		/* V11 to V203 */
+			g[i] = 128 + ana38401_mtp_offset(m[i]);
+		g[7] = v255 & 0xff;
+		g[8] = 128 + ana38401_mtp_offset(m[8]);	/* V3 */
+		g[9] = v255 >= 256 ? 0x80 : 0;
+		g[10] = 0;				/* VT */
+	}
+}
+
+/*
+ * Read the calibration once, after the first Display On: the first
+ * power-on runs inside this driver's probe, where reads are not safe (see
+ * status_log). Then apply its gamma right away, and at every power-on.
+ */
+static void amsa05rb06_calib_work(struct work_struct *work)
+{
+	struct amsa05rb06 *ctx = container_of(to_delayed_work(work),
+					      struct amsa05rb06, calib_work);
+	struct mipi_dsi_device *dsi = ctx->dsi[0];
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+	u8 gamma[1 + ANA38401_GAMMA_LEN] = { ANA38401_GAMMA };
+	u8 mtp[ANA38401_GAMMA_LEN];
+	int ret;
+
+	mutex_lock(&ctx->cmd_lock);
+	if (!ctx->prepared || ctx->gamma_calibrated)
+		goto out;
+
+	ret = ana38401_read(dsi, ANA38401_MTP, ANA38401_MTP_OFFSET, mtp,
+			    sizeof(mtp));
+	if (ret) {
+		dev_warn(&dsi->dev, "cannot read the gamma calibration: %d\n",
+			 ret);
+		goto out;
+	}
+	if (!memchr_inv(mtp, 0, sizeof(mtp)) ||
+	    !memchr_inv(mtp, 0xff, sizeof(mtp))) {
+		dev_warn(&dsi->dev, "no gamma calibration in the panel\n");
+		goto out;
+	}
+
+	ana38401_gamma_from_mtp(mtp, ctx->gamma);
+	ctx->gamma_calibrated = true;
+	dev_info(&dsi->dev, "gamma from the panel's calibration: %*ph\n",
+		 ANA38401_GAMMA_LEN, ctx->gamma);
+
+	memcpy(&gamma[1], ctx->gamma, ANA38401_GAMMA_LEN);
+	mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, gamma, sizeof(gamma));
+	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_UPDATE, 0x01);
+out:
+	mutex_unlock(&ctx->cmd_lock);
 }
 
 /*
@@ -590,6 +698,7 @@ static void amsa05rb06_status_work(struct work_struct *work)
 	unsigned int next;
 	s64 now;
 
+	mutex_lock(&ctx->cmd_lock);
 	if (ctx->status_step == 0) {
 		struct mipi_dsi_device *dsi = ctx->dsi[0];
 
@@ -600,6 +709,7 @@ static void amsa05rb06_status_work(struct work_struct *work)
 		amsa05rb06_log_calibration(ctx);
 	}
 	amsa05rb06_status_log(ctx);
+	mutex_unlock(&ctx->cmd_lock);
 
 	if (++ctx->status_step >= ARRAY_SIZE(amsa05rb06_status_ms))
 		return;
@@ -646,17 +756,21 @@ static int amsa05rb06_prepare(struct drm_panel *panel)
 	amsa05rb06_reset(ctx);
 	amsa05rb06_wait_tcon_ready(ctx);
 
+	mutex_lock(&ctx->cmd_lock);
 	ret = amsa05rb06_on(ctx);
 	if (ret < 0) {
+		mutex_unlock(&ctx->cmd_lock);
 		dev_err(dev, "Failed to initialize panel: %d\n", ret);
 		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 		regulator_bulk_disable(ARRAY_SIZE(amsa05rb06_supplies),
 				       ctx->supplies);
 		return ret;
 	}
-
 	ctx->prepared = true;
-	dev_info(dev, "panel initialised\n");
+	mutex_unlock(&ctx->cmd_lock);
+
+	dev_info(dev, "panel initialised%s\n",
+		 mtp_gamma && ctx->gamma_calibrated ? ", calibrated gamma" : "");
 
 	return 0;
 }
@@ -679,6 +793,9 @@ static int amsa05rb06_enable(struct drm_panel *panel)
 	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 	if (!dsi_ctx.accum_err) {
 		dev_info(&ctx->dsi[0]->dev, "display on\n");
+		if (mtp_gamma && !ctx->gamma_calibrated)
+			schedule_delayed_work(&ctx->calib_work,
+					      msecs_to_jiffies(AMSA05RB06_CALIB_DELAY_MS));
 		amsa05rb06_status_start(ctx);
 	}
 
@@ -690,6 +807,7 @@ static int amsa05rb06_disable(struct drm_panel *panel)
 	struct amsa05rb06 *ctx = to_amsa05rb06(panel);
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi[0] };
 
+	cancel_delayed_work_sync(&ctx->calib_work);
 	cancel_delayed_work_sync(&ctx->status_work);
 	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
 	mipi_dsi_msleep(&dsi_ctx, 100);
@@ -701,7 +819,9 @@ static int amsa05rb06_unprepare(struct drm_panel *panel)
 {
 	struct amsa05rb06 *ctx = to_amsa05rb06(panel);
 
+	mutex_lock(&ctx->cmd_lock);
 	ctx->prepared = false;
+	mutex_unlock(&ctx->cmd_lock);
 	ctx->handed_over = false;
 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 	usleep_range(5000, 6000);
@@ -747,6 +867,8 @@ static int amsa05rb06_bl_update_status(struct backlight_device *bl)
 {
 	struct amsa05rb06 *ctx = bl_get_data(bl);
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi[0] };
+
+	guard(mutex)(&ctx->cmd_lock);
 
 	/* Applied by amsa05rb06_on() when the panel is next powered */
 	if (!ctx->prepared || ctx->handed_over)
@@ -817,6 +939,11 @@ static int amsa05rb06_probe(struct mipi_dsi_device *dsi)
 				     "Failed to get err-fg-gpios\n");
 
 	INIT_DELAYED_WORK(&ctx->status_work, amsa05rb06_status_work);
+	INIT_DELAYED_WORK(&ctx->calib_work, amsa05rb06_calib_work);
+	ret = devm_mutex_init(dev, &ctx->cmd_lock);
+	if (ret)
+		return ret;
+	memcpy(ctx->gamma, ana38401_gamma_nominal, ANA38401_GAMMA_LEN);
 
 	dsi1_node = of_graph_get_remote_node(dev->of_node, 1, -1);
 	if (!dsi1_node)
@@ -873,6 +1000,7 @@ static void amsa05rb06_remove(struct mipi_dsi_device *dsi)
 {
 	struct amsa05rb06 *ctx = mipi_dsi_get_drvdata(dsi);
 
+	cancel_delayed_work_sync(&ctx->calib_work);
 	cancel_delayed_work_sync(&ctx->status_work);
 	drm_panel_remove(&ctx->panel);
 }

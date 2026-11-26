@@ -2125,12 +2125,6 @@ static void gamma_command_sorting_post(struct SMART_DIM *psmart)
 #define V255_RGB_MSB_CNT 3
 
 
-/* The luminance a level's gamma is computed for (its white with no AOR) */
-unsigned int ana38401_dimming_base(unsigned int level)
-{
-	return base_luminance_revA[level][1];
-}
-
 /* The brightness levels, from the dimmest: candela, AOR, ELVSS */
 const struct ana38401_level ana38401_levels[ANA38401_DIMMING_LEVELS] = {
 	{   2, 0x18d, 0x0f },

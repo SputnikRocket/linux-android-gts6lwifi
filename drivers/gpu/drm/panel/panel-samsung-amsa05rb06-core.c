@@ -97,7 +97,7 @@ MODULE_PARM_DESC(mtp_gamma,
 static bool smart_dimming = true;
 module_param(smart_dimming, bool, 0644);
 MODULE_PARM_DESC(smart_dimming,
-		 "Set each brightness level's own gamma, AOR and ELVSS, as Samsung's driver does (default), not the 360-nit gamma dimmed with the AOR. Needs mtp_gamma; applied at the next brightness change");
+		 "Set each brightness level's own gamma, AOR and ELVSS, and dim between levels with the AOR, as Samsung's driver does (default), not the 360-nit gamma dimmed with the AOR. Needs mtp_gamma; applied at the next brightness change");
 
 /* Reading the calibration after the first Display On, from a work item */
 #define AMSA05RB06_CALIB_DELAY_MS	1000
@@ -496,13 +496,13 @@ static void ana38401_write_gamma(struct mipi_dsi_multi_context *dsi_ctx,
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, cmd, sizeof(cmd));
 }
 
-/* Samsung's level for a brightness: the brightest one not above it */
-static unsigned int ana38401_level(unsigned int nits)
+/* The dimmest of Samsung's levels that is at least this bright */
+static unsigned int ana38401_level_up(unsigned int nits)
 {
 	unsigned int i;
 
-	for (i = ANA38401_DIMMING_LEVELS - 1; i > 0; i--)
-		if (ana38401_levels[i].cd <= nits)
+	for (i = 0; i < ANA38401_DIMMING_LEVELS - 1; i++)
+		if (ana38401_levels[i].cd >= nits)
 			break;
 
 	return i;
@@ -516,10 +516,20 @@ static void amsa05rb06_set_brightness(struct amsa05rb06 *ctx,
 	bool calibrated = mtp_gamma && ctx->gamma_calibrated;
 
 	if (calibrated && smart_dimming && ctx->level_gamma_ok) {
-		unsigned int i = ana38401_level(nits);
+		/*
+		 * Between two levels, as Samsung's S dimming: the brighter
+		 * level's gamma and ELVSS, and a longer AOR, which brings it
+		 * down to the brightness asked for (light is emitted for
+		 * AMSA05RB06_AOR_FRAME - AOR units of the frame).
+		 */
+		unsigned int n = clamp(nits, ana38401_levels[0].cd,
+				       ana38401_levels[ANA38401_DIMMING_LEVELS - 1].cd);
+		unsigned int i = ana38401_level_up(n);
+		const struct ana38401_level *l = &ana38401_levels[i];
+		u16 aor_val = AMSA05RB06_AOR_FRAME -
+			DIV_ROUND_CLOSEST((AMSA05RB06_AOR_FRAME - l->aor) * n, l->cd);
 		const u8 aor[] = {
-			ANA38401_AOR, ana38401_levels[i].aor >> 8, 0x00,
-			ana38401_levels[i].aor & 0xff,
+			ANA38401_AOR, aor_val >> 8, 0x00, aor_val & 0xff,
 		};
 
 		ana38401_write_gamma(dsi_ctx, ctx->level_gamma[i]);

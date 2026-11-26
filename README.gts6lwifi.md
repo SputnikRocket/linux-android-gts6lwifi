@@ -200,11 +200,12 @@ the tablet.
   reads the panel's factory calibration (MTP) and computes its gamma for each
   of Samsung's 65 brightness levels with Samsung's smart dimming
   (`panel-samsung-amsa05rb06-dimming.c`, Samsung's code, byte for byte the
-  same results), and sets each level's gamma, AOR and ELVSS. Until then, and
-  with `mtp_gamma=0`, it uses the placeholder gamma of Samsung's init
-  commands, which leaves the dark greys black. The DDI's colour engine (mDNIe)
-  gets the stock calibration's sRGB mode (`screen_mode`). HBM, ACL and
-  Samsung's per-panel white point correction are not implemented.
+  same results), and sets each level's gamma, AOR and ELVSS; between two
+  levels it dims the brighter one with the AOR, as Samsung's S dimming does.
+  Until then, and with `mtp_gamma=0`, it uses the placeholder gamma of
+  Samsung's init commands, which leaves the dark greys black. The DDI's colour
+  engine (mDNIe) gets the stock calibration's sRGB mode (`screen_mode`). HBM,
+  ACL and Samsung's per-panel white point correction are not implemented.
 * **Touchscreen** (`drivers/input/touchscreen/fts1ba90a.c`). The controller
   reports in portrait coordinates (1600x2560), while the panel scans
   landscape (2560x1600): `touchscreen-inverted-x` and

@@ -609,9 +609,14 @@
 		avdd-supply = <&vreg_l17a_3p3>;
 		vdd-supply = <&vreg_l14a_1p8>;
 
-		/* Reported in the panel's portrait orientation */
+		/*
+		 * The controller reports in portrait (1600x2560): turn that
+		 * into the panel's landscape scan, x = raw y, y = 1599 - raw x
+		 */
 		touchscreen-size-x = <1600>;
 		touchscreen-size-y = <2560>;
+		touchscreen-inverted-x;
+		touchscreen-swapped-x-y;
 	};
 };
 

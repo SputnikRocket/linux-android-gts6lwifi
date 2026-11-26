@@ -200,11 +200,12 @@ the tablet.
   at the panel's 360-nit gamma calibration. It stays within the AOR range
   Samsung's tables use. Samsung's MTP-based smart dimming, HBM, ACL and
   mDNIe are not implemented.
-* **Touchscreen** (`drivers/input/touchscreen/fts1ba90a.c`). It reports in the
-  controller's portrait coordinates (1600x2560), while the panel scans
-  landscape (2560x1600). If touches don't line up with the screen, add
-  `touchscreen-swapped-x-y` and, if needed, `touchscreen-inverted-x` or
-  `touchscreen-inverted-y` to the `touchscreen@49` node. The driver force-calibrates
+* **Touchscreen** (`drivers/input/touchscreen/fts1ba90a.c`). The controller
+  reports in portrait coordinates (1600x2560), while the panel scans
+  landscape (2560x1600): `touchscreen-inverted-x` and
+  `touchscreen-swapped-x-y` in the `touchscreen@49` node turn the one into
+  the other (x = raw y, y = 1599 - raw x, from taps on the tablet's
+  corners). The driver force-calibrates
   at probe, as the stock driver does, so don't touch the screen while it
   boots.
 

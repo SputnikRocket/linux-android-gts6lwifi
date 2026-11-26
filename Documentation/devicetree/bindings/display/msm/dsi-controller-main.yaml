@@ -123,6 +123,14 @@ properties:
       Indicates if the DSI controller needs to sync the other DSI controller
       with MIPI DCS commands when qcom,dual-dsi-mode enabled.
 
+  qcom,defer-continuous-clock:
+    type: boolean
+    description: |
+      Indicates that the panel must come out of reset with the clock lane
+      in LP-11 and needs the continuous HS clock only afterwards: the DSI
+      controller keeps the clock lane in LP-11 when it is powered on, and
+      switches it to continuous HS just before it sends the first command.
+
   assigned-clocks:
     minItems: 2
     maxItems: 4

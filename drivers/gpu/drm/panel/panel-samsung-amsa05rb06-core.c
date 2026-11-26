@@ -137,6 +137,17 @@ MODULE_PARM_DESC(stock_init,
 		 "Initialise the panel with the stock command list byte for byte: AOR for 360 nits, no tear effect command");
 
 /*
+ * The AOR command has a middle byte that Samsung's driver always sends as
+ * 0 (the AOR read back from 0x89 is 3 bytes too). If it held finer bits of
+ * the AOR, brightness could step finer than a unit, which below 20 nits is
+ * a visible step: this sends another value, to look.
+ */
+static unsigned int aor_mid;
+module_param(aor_mid, uint, 0644);
+MODULE_PARM_DESC(aor_mid,
+		 "Experimental: the middle byte of the AOR command (Samsung sends 0); applied at the next brightness change");
+
+/*
  * Reading the panel goes through a bus turnaround, and the first modeset
  * runs inside this driver's probe (from mipi_dsi_attach()): reads there
  * have kept the probe from finishing, and storage and USB from probing
@@ -272,7 +283,7 @@ static u16 amsa05rb06_dnits_to_aor(unsigned int dnits)
 static void amsa05rb06_write_aor(struct mipi_dsi_multi_context *dsi_ctx,
 				 u16 aor)
 {
-	const u8 cmd[] = { ANA38401_AOR, aor >> 8, 0x00, aor & 0xff };
+	const u8 cmd[] = { ANA38401_AOR, aor >> 8, aor_mid & 0xff, aor & 0xff };
 
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, cmd, sizeof(cmd));
 }

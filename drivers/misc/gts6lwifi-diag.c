@@ -47,6 +47,12 @@
  *
  * Panics restart with a warm reset while the log buffer is in use, in case
  * that keeps memory.
+ *
+ * Not a diagnostic, but board specific too: a restart with a command
+ * ("reboot recovery", "reboot bootloader") is a warm reset, as in
+ * Qualcomm's and Samsung's kernels. The bootloader acts on the restart
+ * reason qcom-pon.c leaves in the PMIC only after one: with mainline's
+ * cold reset, "adb reboot recovery" booted Android again.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -595,6 +601,21 @@ static struct notifier_block save_log_nb = {
 	.priority = INT_MAX,
 };
 
+static int warm_restart_notify(struct notifier_block *nb, unsigned long action,
+			       void *data)
+{
+	const char *cmd = data;
+
+	if (action == SYS_RESTART && cmd && *cmd)
+		reboot_mode = REBOOT_WARM;
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block warm_restart_nb = {
+	.notifier_call = warm_restart_notify,
+};
+
 /*
  * A command mode panel pulses TE once a frame, and each pulse resets the
  * read pointer line counter of the tear check feeding it to the vertical
@@ -812,6 +833,7 @@ static int __init gts6lwifi_diag_init(void)
 {
 	sec_log_init();
 	register_reboot_notifier(&save_log_nb);
+	register_reboot_notifier(&warm_restart_nb);
 
 	if (reboot_after) {
 		pr_info("restarting into recovery in %u s\n", reboot_after);

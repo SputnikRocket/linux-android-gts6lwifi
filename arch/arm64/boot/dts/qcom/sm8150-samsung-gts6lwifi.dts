@@ -907,63 +907,40 @@
 		};
 	};
 
+	/*
+	 * As Samsung sets them up, in the one state for the port open and
+	 * closed: the WCN3998 takes its power-on and power-off commands as
+	 * pulses on its UART RX line (our TX), so TX stays with the UART and
+	 * pulled up while the port is closed and reopened around the power-on
+	 * pulse, rather than being handed to the GPIO block in between.
+	 */
 	qup_uart13_default: qup-uart13-default-state {
 		cts-pins {
 			pins = "gpio43";
 			function = "qup13";
 			drive-strength = <2>;
-			bias-bus-hold;
+			bias-disable;
 		};
 
 		rts-pins {
 			pins = "gpio44";
 			function = "qup13";
-			drive-strength = <2>;
-			bias-disable;
-		};
-
-		tx-pins {
-			pins = "gpio45";
-			function = "qup13";
-			drive-strength = <2>;
-			bias-disable;
-		};
-
-		rx-pins {
-			pins = "gpio46";
-			function = "qup13";
-			drive-strength = <2>;
-			bias-pull-up;
-		};
-	};
-
-	qup_uart13_sleep: qup-uart13-sleep-state {
-		cts-pins {
-			pins = "gpio43";
-			function = "gpio";
-			drive-strength = <2>;
-			bias-bus-hold;
-		};
-
-		rts-pins {
-			pins = "gpio44";
-			function = "gpio";
 			drive-strength = <2>;
 			bias-pull-down;
 		};
 
 		tx-pins {
 			pins = "gpio45";
-			function = "gpio";
+			function = "qup13";
 			drive-strength = <2>;
 			bias-pull-up;
 		};
 
 		rx-pins {
 			pins = "gpio46";
-			function = "gpio";
+			function = "qup13";
 			drive-strength = <2>;
-			bias-pull-up;
+			bias-disable;
 		};
 	};
 
@@ -1032,8 +1009,7 @@
 	interrupts-extended = <&intc GIC_SPI 585 IRQ_TYPE_LEVEL_HIGH>,
 			      <&tlmm 46 IRQ_TYPE_EDGE_FALLING>;
 	pinctrl-0 = <&qup_uart13_default>;
-	pinctrl-1 = <&qup_uart13_sleep>;
-	pinctrl-names = "default", "sleep";
+	pinctrl-names = "default";
 
 	status = "okay";
 

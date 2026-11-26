@@ -34,6 +34,17 @@
 
 #define DSI_RESET_TOGGLE_DELAY_MS 20
 
+/*
+ * Bring-up switch. Some panels (Anapass DDIs) need the clock lane in LP-11
+ * while they come out of reset, and the continuous HS clock only once they
+ * are ready for commands: keep the clock lane out of HS at power on and
+ * switch it to continuous HS just before the first transfer.
+ */
+static bool dsi_defer_hs_clock;
+module_param(dsi_defer_hs_clock, bool, 0444);
+MODULE_PARM_DESC(dsi_defer_hs_clock,
+		 "Start the continuous DSI HS clock at the first command, not at power on");
+
 static int dsi_populate_dsc_params(struct msm_dsi_host *msm_host, struct drm_dsc_config *dsc);
 
 static int dsi_get_version(const void __iomem *base, u32 *major, u32 *minor)
@@ -187,6 +198,10 @@ struct msm_dsi_host {
 	bool power_on;
 	bool enabled;
 	int irq;
+
+	/* Continuous clock not started yet (dsi_defer_hs_clock) */
+	bool hs_clock_pending;
+	struct msm_dsi_phy *hs_clock_phy;
 };
 
 static inline u32 dsi_read(struct msm_dsi_host *msm_host, u32 reg)
@@ -800,6 +815,23 @@ static void dsi_ctrl_disable(struct msm_dsi_host *msm_host)
 	dsi_write(msm_host, REG_DSI_CTRL, 0);
 }
 
+static void dsi_set_continuous_clock(struct msm_dsi_host *msm_host,
+				     struct msm_dsi_phy *phy, bool enable)
+{
+	u32 lane_ctrl = dsi_read(msm_host, REG_DSI_LANE_CTRL);
+
+	if (enable) {
+		if (msm_dsi_phy_set_continuous_clock(phy, true))
+			lane_ctrl &= ~DSI_LANE_CTRL_HS_REQ_SEL_PHY;
+		lane_ctrl |= DSI_LANE_CTRL_CLKLN_HS_FORCE_REQUEST;
+	} else {
+		msm_dsi_phy_set_continuous_clock(phy, false);
+		lane_ctrl &= ~DSI_LANE_CTRL_CLKLN_HS_FORCE_REQUEST;
+	}
+
+	dsi_write(msm_host, REG_DSI_LANE_CTRL, lane_ctrl);
+}
+
 static bool msm_dsi_host_version_geq(struct msm_dsi_host *msm_host,
 				    u32 major, u32 minor)
 {
@@ -823,7 +855,7 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 	u32 flags = msm_host->mode_flags;
 	enum mipi_dsi_pixel_format mipi_fmt = msm_host->format;
 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
-	u32 data = 0, lane_ctrl = 0;
+	u32 data = 0;
 
 	if (flags & MIPI_DSI_MODE_VIDEO) {
 		if (flags & MIPI_DSI_MODE_VIDEO_HSE)
@@ -920,14 +952,18 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 	dsi_write(msm_host, REG_DSI_LANE_SWAP_CTRL,
 		  DSI_LANE_SWAP_CTRL_DLN_SWAP_SEL(msm_host->dlane_swap));
 
-	if (!(flags & MIPI_DSI_CLOCK_NON_CONTINUOUS)) {
-		lane_ctrl = dsi_read(msm_host, REG_DSI_LANE_CTRL);
-
-		if (msm_dsi_phy_set_continuous_clock(phy, true))
-			lane_ctrl &= ~DSI_LANE_CTRL_HS_REQ_SEL_PHY;
-
-		dsi_write(msm_host, REG_DSI_LANE_CTRL,
-			lane_ctrl | DSI_LANE_CTRL_CLKLN_HS_FORCE_REQUEST);
+	if (!(flags & MIPI_DSI_CLOCK_NON_CONTINUOUS) && !dsi_defer_hs_clock) {
+		dsi_set_continuous_clock(msm_host, phy, true);
+	} else {
+		/*
+		 * Undo a continuous clock the bootloader may have left on, in
+		 * the controller or in the PHY: neither is reset with them.
+		 */
+		dsi_set_continuous_clock(msm_host, phy, false);
+		if (!(flags & MIPI_DSI_CLOCK_NON_CONTINUOUS)) {
+			msm_host->hs_clock_phy = phy;
+			msm_host->hs_clock_pending = true;
+		}
 	}
 
 	data |= DSI_CTRL_ENABLE;
@@ -2434,6 +2470,19 @@ void msm_dsi_host_disable_irq(struct mipi_dsi_host *host)
 	disable_irq(msm_host->irq);
 }
 
+/* Start a continuous clock that dsi_defer_hs_clock held back at power on */
+void msm_dsi_host_start_hs_clock(struct mipi_dsi_host *host)
+{
+	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+
+	if (!msm_host->power_on || !msm_host->hs_clock_pending)
+		return;
+
+	msm_host->hs_clock_pending = false;
+	dsi_set_continuous_clock(msm_host, msm_host->hs_clock_phy, true);
+	dev_info(&msm_host->pdev->dev, "continuous HS clock started\n");
+}
+
 int msm_dsi_host_enable(struct mipi_dsi_host *host)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
@@ -2560,6 +2609,7 @@ int msm_dsi_host_power_off(struct mipi_dsi_host *host)
 	}
 
 	dsi_ctrl_disable(msm_host);
+	msm_host->hs_clock_pending = false;
 
 	pinctrl_pm_select_sleep_state(&msm_host->pdev->dev);
 

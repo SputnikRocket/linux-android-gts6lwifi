@@ -332,6 +332,33 @@ void msm_dsi_manager_tpg_enable(void)
 	}
 }
 
+/* With dsi_defer_hs_clock: start the continuous clock, on both bonded links */
+static void dsi_mgr_start_hs_clock(int id)
+{
+	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
+	struct msm_dsi *other_dsi = dsi_mgr_get_other_dsi(id);
+
+	if (msm_dsi)
+		msm_dsi_host_start_hs_clock(msm_dsi->host);
+	if (IS_BONDED_DSI() && other_dsi)
+		msm_dsi_host_start_hs_clock(other_dsi->host);
+}
+
+/*
+ * The panel was prepared (and has normally been sent commands, which start
+ * a deferred continuous clock already): start it for panels that take none.
+ */
+static void dsi_mgr_bridge_enable(struct drm_bridge *bridge,
+				  struct drm_atomic_commit *commit)
+{
+	int id = dsi_mgr_bridge_get_id(bridge);
+
+	if (IS_BONDED_DSI() && !IS_MASTER_DSI_LINK(id))
+		return;
+
+	dsi_mgr_start_hs_clock(id);
+}
+
 static void dsi_mgr_bridge_post_disable(struct drm_bridge *bridge,
 					struct drm_atomic_commit *commit)
 {
@@ -452,6 +479,7 @@ static const struct drm_bridge_funcs dsi_mgr_bridge_funcs = {
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.attach = dsi_mgr_bridge_attach,
 	.atomic_pre_enable = dsi_mgr_bridge_pre_enable,
+	.atomic_enable = dsi_mgr_bridge_enable,
 	.atomic_post_disable = dsi_mgr_bridge_post_disable,
 	.mode_set = dsi_mgr_bridge_mode_set,
 	.mode_valid = dsi_mgr_bridge_mode_valid,
@@ -526,6 +554,8 @@ int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
 		pr_err("%s: failed to prepare host, %d\n", __func__, ret);
 		goto restore_host0;
 	}
+
+	dsi_mgr_start_hs_clock(id);
 
 	ret = is_read ? msm_dsi_host_cmd_rx(host, msg) :
 			msm_dsi_host_cmd_tx(host, msg);

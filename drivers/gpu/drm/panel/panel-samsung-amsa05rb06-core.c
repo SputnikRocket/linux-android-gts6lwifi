@@ -50,11 +50,13 @@
 
 /*
  * Brightness is set with the AMOLED off ratio, at the gamma the panel is
- * calibrated for at 360 nits. The AOR counts in units of 4 of the 1600
- * lines, so the emission duty is (400 - AOR) / 400. Samsung's own tables
- * use AOR 0x00e at 360 nits and at most 0x18d (2 nits); stay within that.
+ * calibrated for at 360 nits. The AOR counts in units of 4 lines, and
+ * Samsung's interpolation counts the frame as its 1600 lines and 16 lines
+ * of porches, so the emission duty is (404 - AOR) / 404. Samsung's own
+ * tables use AOR 0x00e at 360 nits and at most 0x18d (2 nits); stay within
+ * that.
  */
-#define AMSA05RB06_AOR_FRAME	400
+#define AMSA05RB06_AOR_FRAME	404
 #define AMSA05RB06_AOR_MIN	0x00e
 #define AMSA05RB06_AOR_MAX	0x18d
 #define AMSA05RB06_MAX_NITS	360

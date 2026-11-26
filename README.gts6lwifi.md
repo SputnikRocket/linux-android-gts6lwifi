@@ -204,8 +204,9 @@ the tablet.
   levels it dims the brighter one with the AOR, as Samsung's S dimming does.
   The backlight device counts in tenths of a nit above the 2 nit minimum, so
   Android's brightness 0.0 is the dimmest on and the bottom of its slider
-  dims too; the AOR's resolution (one unit is about 0.3 nits at low
-  brightness) gives steps of at most 7% above 5 nits and 1.6% above 20.
+  dims too; the AOR's resolution (one unit of the 404 in a frame is about
+  0.3 nits at low brightness) gives steps of at most 6% above 5 nits and
+  1.5% above 20.
   Until then, and with `mtp_gamma=0`, it uses the placeholder gamma of
   Samsung's init commands, which leaves the dark greys black. The DDI's colour
   engine (mDNIe) gets the stock calibration's sRGB mode (`screen_mode`). HBM,

@@ -200,8 +200,12 @@ the tablet.
   reads the panel's factory calibration (MTP) and computes its gamma for each
   of Samsung's 65 brightness levels with Samsung's smart dimming
   (`panel-samsung-amsa05rb06-dimming.c`, Samsung's code, byte for byte the
-  same results), and sets each level's gamma, AOR and ELVSS; between two
-  levels it dims the brighter one with the AOR, as Samsung's S dimming does.
+  same results), and sets each level's gamma, AOR and ELVSS. Between two
+  levels it uses the brighter one's gamma, and an AOR as Samsung's driver
+  computes it: stepped linearly from one level's to the other's where both
+  gammas are for the same luminance (A dimming, 2 to 68 and 162 to 249
+  nits), scaled to the brightness elsewhere (S dimming; `a_dimming=0` uses
+  this everywhere).
   The backlight device counts in tenths of a nit above the 2 nit minimum, so
   Android's brightness 0.0 is the dimmest on and the bottom of its slider
   dims too; the AOR's resolution (one unit is about 0.3 nits at low

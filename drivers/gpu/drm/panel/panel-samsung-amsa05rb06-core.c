@@ -109,6 +109,21 @@ module_param(smart_dimming, bool, 0644);
 MODULE_PARM_DESC(smart_dimming,
 		 "Set each brightness level's own gamma, AOR and ELVSS, and dim between levels with the AOR, as Samsung's driver does (default), not the 360-nit gamma dimmed with the AOR. Needs mtp_gamma; applied at the next brightness change");
 
+/*
+ * Between two levels whose gammas are for the same luminance (from 2 to 68
+ * nits, and from 162 to 249), Samsung's driver steps the AOR linearly from
+ * the one level's to the other's ("A dimming"). Its tables show why: at
+ * 2 nits, 3 of the 400 units lit give 2 nits from a gamma for 112, more
+ * than twice the 3/400 of it, so the light is not in proportion to the
+ * units lit, and scaling the brighter level's AOR to the brightness asked
+ * for ("S dimming", used where the AOR stays the same) jumps at each level
+ * below about 20 nits.
+ */
+static bool a_dimming = true;
+module_param(a_dimming, bool, 0644);
+MODULE_PARM_DESC(a_dimming,
+		 "Between levels with gammas for the same luminance, step the AOR linearly from one level's to the other's, as Samsung's driver does (default), not in proportion to the brightness. Applied at the next brightness change");
+
 /* Reading the calibration after the first Display On, from a work item */
 #define AMSA05RB06_CALIB_DELAY_MS	1000
 
@@ -537,24 +552,37 @@ static void amsa05rb06_set_brightness(struct amsa05rb06 *ctx,
 
 	if (calibrated && smart_dimming && ctx->level_gamma_ok) {
 		/*
-		 * Between two levels, as Samsung's S dimming: the brighter
-		 * level's gamma and ELVSS, and a longer AOR, which brings it
-		 * down to the brightness asked for (light is emitted for
-		 * AMSA05RB06_AOR_FRAME - AOR units of the frame). Rounded,
-		 * that can come out below the dimmer level at its own
-		 * settings; take one unit more then, so that brightness never
-		 * goes down as the value goes up.
+		 * Between two levels, the brighter level's gamma and ELVSS,
+		 * and a longer AOR (light is emitted for AMSA05RB06_AOR_FRAME
+		 * - AOR units of the frame). Where both levels' gammas are for
+		 * the same luminance, the AOR goes linearly from the dimmer
+		 * level's to the brighter one's (A dimming); elsewhere it is
+		 * the brighter level's, scaled to the brightness asked for (S
+		 * dimming). Rounded, S dimming can come out below the dimmer
+		 * level at its own settings; take one unit more then, so that
+		 * brightness never goes down as the value goes up.
 		 */
 		unsigned int i = ana38401_level_up(DIV_ROUND_UP(dnits,
 								AMSA05RB06_BL_SCALE));
 		const struct ana38401_level *l = &ana38401_levels[i];
+		const struct ana38401_level *d = i > 0 ? &ana38401_levels[i - 1] : l;
 		unsigned int lit = AMSA05RB06_AOR_FRAME - l->aor;
-		unsigned int on = DIV_ROUND_CLOSEST(lit * dnits,
-						    l->cd * AMSA05RB06_BL_SCALE);
+		unsigned int on;
 
-		if (i > 0)
-			on = max(on, DIV_ROUND_UP(lit * ana38401_levels[i - 1].cd,
-						  l->cd));
+		if (a_dimming && d->aor != l->aor &&
+		    ana38401_dimming_base(i - 1) == ana38401_dimming_base(i)) {
+			/* d is dimmer, so it has the longer AOR */
+			unsigned int lit_d = AMSA05RB06_AOR_FRAME - d->aor;
+
+			on = lit_d + DIV_ROUND_CLOSEST((lit - lit_d) *
+						       (dnits - d->cd * AMSA05RB06_BL_SCALE),
+						       (l->cd - d->cd) * AMSA05RB06_BL_SCALE);
+		} else {
+			on = DIV_ROUND_CLOSEST(lit * dnits,
+					       l->cd * AMSA05RB06_BL_SCALE);
+			if (i > 0)
+				on = max(on, DIV_ROUND_UP(lit * d->cd, l->cd));
+		}
 
 		amsa05rb06_write_aor(dsi_ctx, AMSA05RB06_AOR_FRAME - on);
 		ana38401_gpara_write(dsi_ctx, ANA38401_GP_ELVSS, l->elvss);

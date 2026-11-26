@@ -629,6 +629,8 @@
 
 	qcom,dual-dsi-mode;
 	qcom,master-dsi;
+	/* Anapass DDI: LP-11 through reset and TCON_RDY, then the HS clock */
+	qcom,defer-continuous-clock;
 
 	pinctrl-0 = <&mdp_vsync_te>;
 	pinctrl-names = "default";
@@ -686,6 +688,7 @@
 	vdda-supply = <&vreg_l3c_1p2>;
 
 	qcom,dual-dsi-mode;
+	qcom,defer-continuous-clock;
 
 	/* DSI1 is the slave link and runs from DSI0's PLL */
 	assigned-clock-parents = <&mdss_dsi0_phy DSI_BYTE_PLL_CLK>,

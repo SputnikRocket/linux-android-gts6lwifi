@@ -34,7 +34,7 @@ The first commit is an unmodified snapshot of
 | `ANDROID: usb: gadget: Skip the uevent hook for legacy gadgets` | the USB serial console build warned in `android_set_connected()` |
 | `ANDROID: soc: qcom: rpmh: Skip reads on SoCs that hang on them` | SM8150's RPMh never answers the regulator read-back that 7.3 added, which hung every RPMh regulator (and so storage, USB and the display) |
 | `ANDROID: misc: Add gts6lwifi boot diagnostics` | optional timed restart into recovery that first saves the kernel log to the `debug` partition; the log also goes to Samsung's RAM log buffer |
-| `.github/workflows/build-kernel.yml` | builds `Image`, modules, `boot.img`, `dtbo.img` and an Odin tar |
+| `.github/workflows/build-kernel.yml` | builds `Image`, modules, `boot.img`, `dtbo.img` and a TWRP flashable zip |
 
 ### Hardware support
 
@@ -86,17 +86,16 @@ sources (`QcomModulePkg/Library/BootLib`):
 
 1. The bootloader must be unlocked (OEM unlock), as for any custom kernel.
 2. Flash a vbmeta with verification disabled (see above).
-3. Flash the kernel, either way:
-   * **TWRP**: download the `gts6lwifi-mainline-twrp-<run>` artifact and flash
-     the downloaded `.zip` as it is (Install, then select the zip). Don't unpack
-     it: the artifact *is* the flashable zip. The installer checks that the
-     device is an SM-T860, verifies the images' checksums, and checks that
-     they fit. It then copies the current `boot` and `dtbo` partitions to
-     `/sdcard/gts6lwifi-mainline-backup/<date>/` and flashes `boot.img` and
-     `dtbo.img`. It also warns if vbmeta still has verification enabled.
-     Leave TWRP's zip signature verification off, since the zip is unsigned.
-   * **Odin**: flash `gts6lwifi-mainline-odin.tar` from the `boot-img`
-     artifact in the **AP** slot. It contains `boot.img` and `dtbo.img`.
+3. Flash the kernel from TWRP: download the `gts6lwifi-mainline-twrp-<run>`
+   artifact and flash the downloaded `.zip` as it is (Install, then select the
+   zip). Don't unpack it: the artifact *is* the flashable zip. The installer
+   checks that the device is an SM-T860, verifies the images' checksums, and
+   checks that they fit. It then copies the current `boot` and `dtbo`
+   partitions to `/sdcard/gts6lwifi-mainline-backup/<date>/` and flashes
+   `boot.img` and `dtbo.img`. It also warns if vbmeta still has verification
+   enabled. Leave TWRP's zip signature verification off, since the zip is
+   unsigned. The `boot-img` artifact has the same `boot.img` and `dtbo.img`,
+   for flashing them some other way.
 4. To go back, flash the backed-up (or stock) `boot.img` **and** `dtbo.img`,
    for example from TWRP with Install > Install Image.
 
@@ -134,7 +133,7 @@ The toolchain is the AOSP clang that this ACK branch pins (`CLANG_VERSION` in
 `bazel/constants.scl`). It comes from `prebuilts/clang/host/linux-x86` on the
 `main-kernel` branch, as in ACK's own manifest, and is cached between runs.
 Artifacts: `kernel` (Image, Image-dtb, DTBs, config, System.map, build log),
-`modules`, `boot-img` (boot.img, dtbo.img, Odin tar, SHA256SUMS), and `twrp`.
+`modules`, `boot-img` (boot.img, dtbo.img, SHA256SUMS), and `twrp`.
 The `twrp` artifact is uploaded unpacked, so the zip GitHub serves for download
 is the TWRP flashable zip itself. Its installer is `.github/twrp/update-binary`.
 

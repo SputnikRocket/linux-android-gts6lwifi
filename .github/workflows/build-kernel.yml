@@ -127,16 +127,24 @@ jobs:
         with:
           fetch-depth: 1
 
-      # A GKI build with debug info, the toolchain and ccache need more than the
-      # ~14 GB a hosted runner starts with; drop preinstalled SDKs we do not use.
+      # The build takes about 11 GB: 3 GB of objects (debug info), 3 GB of
+      # toolchain, up to 3 GB of ccache and the source. Hosted runners usually
+      # start with more free than that. If not, remove preinstalled SDKs we do
+      # not use, in the background: deleting them takes about two minutes,
+      # while the build fills the disk only gradually.
       - name: Free disk space
         run: |
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+          avail=$(df --output=avail -BG / | tail -n1 | tr -dc 0-9)
+          if [ "$avail" -ge 20 ]; then
+            echo "$avail GB free: enough"
+            exit 0
+          fi
+          echo "::notice title=Disk space::only $avail GB free: removing unused SDKs in the background"
+          sudo nohup sh -c 'rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/share/powershell \
-            /usr/share/swift /usr/local/julia* /opt/microsoft
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          df -h /
+            /usr/share/swift /usr/local/julia* /opt/microsoft; docker image prune --all --force' \
+            </dev/null >/dev/null 2>&1 &
 
       - name: Install build dependencies
         run: |
@@ -240,7 +248,8 @@ jobs:
           done
 
           make_args=(
-            -j"$(nproc)"
+            # Two more jobs than CPUs: cache hits wait on the disk, not the CPU
+            -j"$(( $(nproc) + 2 ))"
             O=out ARCH=arm64 LLVM=1 LLVM_IAS=1
             CC="ccache clang"
             KBUILD_BUILD_USER=build-user KBUILD_BUILD_HOST=build-host
@@ -487,10 +496,8 @@ jobs:
           PY
 
           cd dist/boot
-          # Odin flashes the images inside a plain tar (AP slot)
-          tar -H ustar -cf gts6lwifi-mainline-odin.tar boot.img $( [ -f dtbo.img ] && echo dtbo.img )
           ls -l
-          sha256sum -- *.img *.tar | tee SHA256SUMS
+          sha256sum -- *.img | tee SHA256SUMS
 
       # The TWRP zip is uploaded unpacked: GitHub zips an artifact for download,
       # so the downloaded artifact *is* the flashable zip (META-INF/ at its root).
@@ -537,7 +544,6 @@ jobs:
             echo
             echo "- **TWRP**: download \`gts6lwifi-mainline-twrp-${GITHUB_RUN_NUMBER}${VARIANT}\` and flash the downloaded .zip as it is"
             echo "  (Install > select zip). It backs up the current boot and dtbo to \`/sdcard/gts6lwifi-mainline-backup/\`."
-            echo "- **Odin**: \`gts6lwifi-mainline-odin.tar\` from the boot-img artifact, in the AP slot."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Separate artifacts: kernel (Image/DTBs/config/log), modules, boot images, TWRP zip

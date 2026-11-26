@@ -93,14 +93,17 @@ MODULE_PARM_DESC(status_log,
 		 "Log the panel's own view (power mode, DSI errors, error flag) for 30 s after it is switched on");
 
 /*
- * The DDI's colour engine (Samsung's mDNIe) maps the content onto the
- * panel's wide gamut. Without it the panel shows sRGB content
- * over-saturated, with its own native gamut and contrast.
+ * The DDI's colour engine (Samsung's mDNIe), with Samsung's modes. auto is
+ * Samsung's default ("Vivid"), and on this tablet looks the same as the
+ * DDI's own state after reset. The sRGB modes (natural, standard, dynamic)
+ * move the white point to a warmer one; Samsung's driver then corrects it
+ * for each panel from its measured colour coordinates, which this one does
+ * not, so they look warmer than they should.
  */
-static char *screen_mode = "natural";
+static char *screen_mode = "auto";
 module_param(screen_mode, charp, 0644);
 MODULE_PARM_DESC(screen_mode,
-		 "Colour mode, Samsung's for the UI: natural (sRGB, default), auto (the stock default, \"Vivid\"), standard, dynamic, movie, or off (the DDI's own state after reset). Applied each time the panel is switched on");
+		 "Colour mode, Samsung's for the UI: auto (Samsung's default, \"Vivid\"), natural (sRGB), standard, dynamic, movie, or off (the DDI's own state after reset). Applied each time the panel is switched on");
 
 /* When to read the panel's status again, in ms after Display On */
 static const unsigned int amsa05rb06_status_ms[] = {
@@ -347,8 +350,8 @@ static const struct ana38401_mdnie_mode {
 #define ANA38401_MDNIE_MODE(n) { #n, \
 	ana38401_mdnie_##n##_1, sizeof(ana38401_mdnie_##n##_1), \
 	ana38401_mdnie_##n##_2, sizeof(ana38401_mdnie_##n##_2) }
-	ANA38401_MDNIE_MODE(natural),
 	ANA38401_MDNIE_MODE(auto),
+	ANA38401_MDNIE_MODE(natural),
 	ANA38401_MDNIE_MODE(standard),
 	ANA38401_MDNIE_MODE(dynamic),
 	ANA38401_MDNIE_MODE(movie),

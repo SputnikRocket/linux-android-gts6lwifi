@@ -109,7 +109,10 @@
 		 * The bootloader's splash buffer (cont_splash_mem), used until
 		 * the MSM display driver takes over the panel. The panel is a
 		 * command-mode panel, so updates only show if the bootloader
-		 * leaves the display engine in auto-refresh.
+		 * leaves the display engine in auto-refresh. The panel's VDDIO
+		 * (vreg_l14a_1p8) is always on, so it isn't listed: that way
+		 * the splash, and the kernel log on it, also come up when the
+		 * PM8150 regulators don't.
 		 */
 		framebuffer: framebuffer@9c400000 {
 			compatible = "simple-framebuffer";
@@ -121,7 +124,6 @@
 
 			clocks = <&gcc GCC_DISP_HF_AXI_CLK>,
 				 <&gcc GCC_DISP_SF_AXI_CLK>;
-			vddio-supply = <&vreg_l14a_1p8>;
 			vdd-supply = <&panel_vdd>;
 		};
 	};

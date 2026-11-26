@@ -24,7 +24,7 @@ on:
         type: string
         default: "qcom/sm8150-samsung-gts6lwifi-dtbo"
       cmdline:
-        description: "Kernel command line for boot.img. Empty = BOOT_CMDLINE from this workflow."
+        description: "Kernel command line for boot.img, at most 511 bytes with the options the other inputs add (the bootloader reads no more). Empty = BOOT_CMDLINE from this workflow."
         type: string
         default: ""
       display:
@@ -391,7 +391,7 @@ jobs:
           esac
           # Diagnostic: save the whole log (debug partition, RAM log buffer), restart into TWRP
           if [ "$REBOOT_AFTER" != off ]; then
-            BOOT_CMDLINE="$BOOT_CMDLINE gts6lwifi_diag.reboot_after=$REBOOT_AFTER gts6lwifi_diag.save_every=15 gts6lwifi_diag.te_probe=1 panel_samsung_amsa05rb06.status_log=1 log_buf_len=4M"
+            BOOT_CMDLINE="$BOOT_CMDLINE gts6lwifi_diag.reboot_after=$REBOOT_AFTER gts6lwifi_diag.save_every=15 gts6lwifi_diag.te_probe=1 panel_samsung_amsa05rb06.status_log=1"
             case " $BOOT_CMDLINE " in *" ignore_loglevel "*) ;; *) BOOT_CMDLINE="$BOOT_CMDLINE ignore_loglevel" ;; esac
             echo "::notice title=Diagnostic build::reboot_to_recovery: restarts into recovery $REBOOT_AFTER s into the boot"
           fi
@@ -424,10 +424,11 @@ jobs:
           nz = b"TRAILER!!!\0"
           ramdisk = (b"070701" + b"".join(b"%08X" % v for v in [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, len(nz), 0]) + nz).ljust(124, b"\0")
 
-          # like mkbootimg: the first 511 bytes go in cmdline, the rest in extra_cmdline
+          # Samsung's bootloader ignores extra_cmdline, where mkbootimg puts what
+          # does not fit in the first 511 bytes: keep the whole line in cmdline
           board, cmd = e["BOOT_BOARD"].encode(), " ".join(e["BOOT_CMDLINE"].split()).encode()
-          need(len(cmd) < 512 + 1024, "kernel command line must be shorter than 1536 bytes (it is %d)" % len(cmd))
-          cmd_main, cmd_extra = cmd[:511], cmd[511:]
+          need(len(cmd) <= 511, "kernel command line is %d bytes; the bootloader reads only the first 511" % len(cmd))
+          cmd_main, cmd_extra = cmd, b""
           sha = hashlib.sha1()                                # header 'id': kernel, ramdisk, second, recovery_dtbo
           for blob in (kernel, ramdisk, b""):
               sha.update(blob); sha.update(struct.pack("<I", len(blob)))

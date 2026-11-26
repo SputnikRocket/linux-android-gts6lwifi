@@ -44,7 +44,7 @@ The first commit is an unmodified snapshot of
 | Memory map | Samsung's layout: TZ region, PIL carve-outs, TIMA/RKP, sec_debug, plog |
 | UFS (system), microSD | yes |
 | USB | USB 2.0 device mode (adb/MTP gadget). D+/D- run through the SM5705 MUIC, which `extcon-sm5705` connects to the USB PHY (no cable detection yet). The S2MM005 Type-C/PD chip has no mainline driver |
-| Display | yes: `panel-samsung-amsa05rb06` (Anapass ANA38401 DDI) on bonded DSI0/DSI1, command mode with the TE signal, 2560x1600@60 via the MSM DPU. Brightness 2–360 nits (`/sys/class/backlight`). The bootloader splash is a `simple-framebuffer` until the MSM driver takes over |
+| Display | yes: `panel-samsung-amsa05rb06` (Anapass ANA38401 DDI) on bonded DSI0/DSI1, command mode with the TE signal, 2560x1600@60 via the MSM DPU. Brightness 2–360 nits (`/sys/class/backlight`, in tenths of a nit above 2 nits: 0 is 2 nits, 3580 is 360). The bootloader splash is a `simple-framebuffer` until the MSM driver takes over |
 | Touchscreen | `fts1ba90a` (STM FTS1BA90A, Samsung firmware) on i2c17, 10 fingers |
 | Power / volume keys, cover hall sensor | yes |
 | Debug UART | `uart2` (GPIO 85/86) as `ttyMSM0` |
@@ -202,6 +202,10 @@ the tablet.
   (`panel-samsung-amsa05rb06-dimming.c`, Samsung's code, byte for byte the
   same results), and sets each level's gamma, AOR and ELVSS; between two
   levels it dims the brighter one with the AOR, as Samsung's S dimming does.
+  The backlight device counts in tenths of a nit above the 2 nit minimum, so
+  Android's brightness 0.0 is the dimmest on and the bottom of its slider
+  dims too; the AOR's resolution (one unit is about 0.3 nits at low
+  brightness) gives steps of at most 7% above 5 nits and 1.6% above 20.
   Until then, and with `mtp_gamma=0`, it uses the placeholder gamma of
   Samsung's init commands, which leaves the dark greys black. The DDI's colour
   engine (mDNIe) gets the stock calibration's sRGB mode (`screen_mode`). HBM,

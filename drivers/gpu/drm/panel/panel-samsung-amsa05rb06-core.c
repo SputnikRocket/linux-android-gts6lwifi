@@ -59,6 +59,16 @@
 #define AMSA05RB06_AOR_MAX	0x18d
 #define AMSA05RB06_MAX_NITS	360
 #define AMSA05RB06_MIN_NITS	2
+/*
+ * The backlight device counts in tenths of a nit above the panel's 2 nit
+ * minimum, so 0 is the dimmest the panel goes, not off (as Android's
+ * brightness 0.0). In whole nits from 0, a step is 7% at 15 nits, where
+ * the AOR can do three times finer, and the bottom of Android's slider
+ * (its first eighth gives under 2 nits) is dead.
+ */
+#define AMSA05RB06_BL_SCALE	10
+#define AMSA05RB06_BL_MAX	((AMSA05RB06_MAX_NITS - AMSA05RB06_MIN_NITS) * \
+				 AMSA05RB06_BL_SCALE)
 
 /*
  * The gamma register: per colour, V11, V23, V35, V51, V87, V151, V203,
@@ -238,22 +248,28 @@ static void ana38401_gpara_write(struct mipi_dsi_multi_context *dsi_ctx,
 	ana38401_dcs_write_long(dsi_ctx, data, sizeof(data));
 }
 
-static u16 amsa05rb06_nits_to_aor(unsigned int nits)
+/* Brightness in tenths of a nit, from the backlight device's value */
+static unsigned int amsa05rb06_bl_to_dnits(unsigned int bl)
+{
+	return AMSA05RB06_MIN_NITS * AMSA05RB06_BL_SCALE +
+	       min(bl, AMSA05RB06_BL_MAX);
+}
+
+/* The AOR for a brightness (in tenths of a nit) at the 360 nit gamma */
+static u16 amsa05rb06_dnits_to_aor(unsigned int dnits)
 {
 	unsigned int aor;
 
-	nits = clamp(nits, AMSA05RB06_MIN_NITS, AMSA05RB06_MAX_NITS);
 	aor = AMSA05RB06_AOR_FRAME -
-	      DIV_ROUND_CLOSEST(nits * (AMSA05RB06_AOR_FRAME - AMSA05RB06_AOR_MIN),
-				AMSA05RB06_MAX_NITS);
+	      DIV_ROUND_CLOSEST(dnits * (AMSA05RB06_AOR_FRAME - AMSA05RB06_AOR_MIN),
+				AMSA05RB06_MAX_NITS * AMSA05RB06_BL_SCALE);
 
 	return clamp(aor, AMSA05RB06_AOR_MIN, AMSA05RB06_AOR_MAX);
 }
 
 static void amsa05rb06_write_aor(struct mipi_dsi_multi_context *dsi_ctx,
-				 unsigned int nits)
+				 u16 aor)
 {
-	u16 aor = amsa05rb06_nits_to_aor(nits);
 	const u8 cmd[] = { ANA38401_AOR, aor >> 8, 0x00, aor & 0xff };
 
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, cmd, sizeof(cmd));
@@ -508,39 +524,46 @@ static unsigned int ana38401_level_up(unsigned int nits)
 	return i;
 }
 
-/* Gamma, AOR and ELVSS for a brightness, latched together */
+/*
+ * Gamma, AOR and ELVSS for a backlight value, latched together. They go in
+ * the order of Samsung's brightness packet: AOR, ELVSS, gamma, update.
+ */
 static void amsa05rb06_set_brightness(struct amsa05rb06 *ctx,
 				      struct mipi_dsi_multi_context *dsi_ctx,
-				      unsigned int nits)
+				      unsigned int bl)
 {
 	bool calibrated = mtp_gamma && ctx->gamma_calibrated;
+	unsigned int dnits = amsa05rb06_bl_to_dnits(bl);
 
 	if (calibrated && smart_dimming && ctx->level_gamma_ok) {
 		/*
 		 * Between two levels, as Samsung's S dimming: the brighter
 		 * level's gamma and ELVSS, and a longer AOR, which brings it
 		 * down to the brightness asked for (light is emitted for
-		 * AMSA05RB06_AOR_FRAME - AOR units of the frame).
+		 * AMSA05RB06_AOR_FRAME - AOR units of the frame). Rounded,
+		 * that can come out below the dimmer level at its own
+		 * settings; take one unit more then, so that brightness never
+		 * goes down as the value goes up.
 		 */
-		unsigned int n = clamp(nits, ana38401_levels[0].cd,
-				       ana38401_levels[ANA38401_DIMMING_LEVELS - 1].cd);
-		unsigned int i = ana38401_level_up(n);
+		unsigned int i = ana38401_level_up(DIV_ROUND_UP(dnits,
+								AMSA05RB06_BL_SCALE));
 		const struct ana38401_level *l = &ana38401_levels[i];
-		u16 aor_val = AMSA05RB06_AOR_FRAME -
-			DIV_ROUND_CLOSEST((AMSA05RB06_AOR_FRAME - l->aor) * n, l->cd);
-		const u8 aor[] = {
-			ANA38401_AOR, aor_val >> 8, 0x00, aor_val & 0xff,
-		};
+		unsigned int lit = AMSA05RB06_AOR_FRAME - l->aor;
+		unsigned int on = DIV_ROUND_CLOSEST(lit * dnits,
+						    l->cd * AMSA05RB06_BL_SCALE);
 
+		if (i > 0)
+			on = max(on, DIV_ROUND_UP(lit * ana38401_levels[i - 1].cd,
+						  l->cd));
+
+		amsa05rb06_write_aor(dsi_ctx, AMSA05RB06_AOR_FRAME - on);
+		ana38401_gpara_write(dsi_ctx, ANA38401_GP_ELVSS, l->elvss);
 		ana38401_write_gamma(dsi_ctx, ctx->level_gamma[i]);
-		mipi_dsi_dcs_write_buffer_multi(dsi_ctx, aor, sizeof(aor));
-		ana38401_gpara_write(dsi_ctx, ANA38401_GP_ELVSS,
-				     ana38401_levels[i].elvss);
 	} else {
+		amsa05rb06_write_aor(dsi_ctx, amsa05rb06_dnits_to_aor(dnits));
+		ana38401_gpara_write(dsi_ctx, ANA38401_GP_ELVSS, 0x0f);
 		ana38401_write_gamma(dsi_ctx, calibrated ? ctx->gamma :
 				     ana38401_gamma_nominal);
-		amsa05rb06_write_aor(dsi_ctx, nits);
-		ana38401_gpara_write(dsi_ctx, ANA38401_GP_ELVSS, 0x0f);
 	}
 	ana38401_gpara_write(dsi_ctx, ANA38401_GP_UPDATE, 0x01);
 }
@@ -553,7 +576,7 @@ static int amsa05rb06_on(struct amsa05rb06 *ctx)
 	ana38401_gpara_write(&dsi_ctx, ANA38401_GP_GAMMA_IDX, 0x04);
 	if (stock_init) {
 		ana38401_write_gamma(&dsi_ctx, ana38401_gamma_nominal);
-		amsa05rb06_write_aor(&dsi_ctx, AMSA05RB06_MAX_NITS);
+		amsa05rb06_write_aor(&dsi_ctx, AMSA05RB06_AOR_MIN);
 		ana38401_gpara_write(&dsi_ctx, ANA38401_GP_ELVSS, 0x0f);
 	} else {
 		amsa05rb06_set_brightness(ctx, &dsi_ctx,
@@ -964,8 +987,8 @@ static struct backlight_device *amsa05rb06_create_backlight(struct amsa05rb06 *c
 	const struct backlight_properties props = {
 		.type = BACKLIGHT_RAW,
 		.scale = BACKLIGHT_SCALE_LINEAR,
-		.brightness = 180,
-		.max_brightness = AMSA05RB06_MAX_NITS,
+		.brightness = (180 - AMSA05RB06_MIN_NITS) * AMSA05RB06_BL_SCALE,
+		.max_brightness = AMSA05RB06_BL_MAX,
 	};
 
 	return devm_backlight_device_register(dev, dev_name(dev), dev, ctx,

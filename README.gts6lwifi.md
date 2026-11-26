@@ -282,8 +282,16 @@ the tablet.
   on the bootloader's command line), shown in TWRP's `/proc/last_kmsg` if
   memory ever survives a reset; the end of that file also holds the
   bootloader's own log of each boot, with the reset and boot reasons.
-* **Framebuffer console**. `console=tty0` puts the kernel log on the boot
-  splash, if the bootloader left the panel running.
+* **Framebuffer console**. `console=tty0` (in AOSP's command line) puts the
+  kernel log on the boot splash, from about 0.4 s until the MSM display
+  driver takes over. The splash depends on no PMIC regulator, so a boot that
+  stalls before the display, storage or USB come up still shows its log
+  there: photograph it. With `gts6lwifi_diag.save_every=15`, a probe that is
+  stuck is named every 15 s ("... is busy, probably stuck in probe"), and
+  `hung_task_timeout_secs=20` prints the stack of a task blocked that long.
+  One build (CI run 55) hung that way every time, with the PM8150
+  regulators never bound and a probe stuck; the next one, with only the
+  splash's supply moved out of the way, booted: it depends on timing.
 * **Serial**. `ttyMSM0` on GPIO 85/86, 115200n8.
 * If the bootloader rejects the image, its screen message tells which step
   failed: no matching DTB, DTBO not found or not applied, or the

@@ -807,9 +807,14 @@
 	status = "okay";
 };
 
+/*
+ * The modem's firmware is on its own partition (modem), not in apnhlos. It
+ * also runs the WCN3998's WLAN firmware, which it fetches over QRTR from
+ * tqftpserv, and tqftpserv looks for that next to the modem firmware: the
+ * AOSP build puts the two together in this directory.
+ */
 &remoteproc_mpss {
-	/* Also runs the WCN3998 WLAN firmware */
-	firmware-name = "qcom/sm8150/samsung/gts6lwifi/modem.mdt";
+	firmware-name = "qcom/sm8150/samsung/gts6lwifi-modem/modem.mdt";
 
 	status = "okay";
 };

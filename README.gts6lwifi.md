@@ -49,8 +49,9 @@ The first commit is an unmodified snapshot of
 | Power / volume keys, cover hall sensor | yes |
 | Debug UART | `uart2` (GPIO 85/86) as `ttyMSM0` |
 | Adreno 640 | enabled; needs firmware: `qcom/a630_sqe.fw` and `qcom/a640_gmu.bin` from linux-firmware, and the device-signed zap shader as `qcom/sm8150/samsung/gts6lwifi/a640_zap.mdt` |
-| ADSP / CDSP / SLPI / modem | enabled; load `qcom/sm8150/samsung/gts6lwifi/*.mdt`, the stock firmware partition's `image/` directory (the AOSP build links it there under `/vendor/firmware`) |
-| Wi-Fi / BT (WCN3998) | enabled (ath10k_snoc, hci_qca); needs the modem up and ath10k firmware |
+| ADSP / CDSP / SLPI | enabled; load `qcom/sm8150/samsung/gts6lwifi/*.mdt`, the stock firmware partition's (apnhlos) `image/` directory (the AOSP build links it there under `/vendor/firmware`) |
+| Modem | enabled; loads `qcom/sm8150/samsung/gts6lwifi-modem/modem.mdt`: the stock `modem` partition's `image/` directory, which the AOSP build copies there next to Samsung's `wlanmdsp.mbn`; rmtfs (read-only) and tqftpserv serve it |
+| Wi-Fi / BT (WCN3998) | enabled (ath10k_snoc, hci_qca); Wi-Fi needs the modem up (it runs the WLAN firmware), and ath10k's `firmware-5.bin` and `board.bin` (Samsung's `bdwlan.bin`); Bluetooth needs `qca/crbtfw21.tlv` and `qca/crnv21.bin`. CH0 (`vreg_l11c_3p3`) is fixed at 3.312 V, as stock |
 | ramoops | on Samsung's own ramoops region (0xc1300000, same layout as stock) |
 | S Pen (Wacom W90xx), audio, charger/fuel gauge, pogo keyboard, cameras | not yet: no mainline drivers |
 

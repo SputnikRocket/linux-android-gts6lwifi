@@ -39,6 +39,12 @@
  *   the display panel's tear effect (TE) signal reaches the display engine,
  *   from the interface blocks' tear check counters (see te_probe_intf()).
  *
+ * - gts6lwifi_diag.dsi_dump=1 logs the display hardware's registers (DSI
+ *   controllers, PHYs and PLLs; the display engine's top, control,
+ *   interface and pingpong blocks) as the bootloader left them, with its
+ *   picture working, and again a few seconds into the boot, as Linux set
+ *   them, to compare the two.
+ *
  * Panics restart with a warm reset while the log buffer is in use, in case
  * that keeps memory.
  */
@@ -657,6 +663,107 @@ static void te_probe_intf(unsigned int index)
 		readl(intf + DPU_INTF_TEAR_MDP_VSYNC_SEL) & 0xf);
 }
 
+static bool dsi_dump;
+module_param(dsi_dump, bool, 0444);
+MODULE_PARM_DESC(dsi_dump,
+		 "Log the display hardware's registers as the bootloader left them and as Linux set them");
+
+struct dsi_dump_region {
+	const char *name;
+	phys_addr_t base;
+	u32 len;
+};
+
+/* SM8150, from its device tree and the DPU 5.0 catalog */
+static const struct dsi_dump_region dsi_dump_regions[] = {
+	{ "dsi0",	0x0ae94000, 0x400 },
+	{ "dsi0_phy",	0x0ae94400, 0x200 },
+	{ "dsi0_lane",	0x0ae94600, 0x280 },
+	{ "dsi0_pll",	0x0ae94900, 0x260 },
+	{ "dsi1",	0x0ae96000, 0x400 },
+	{ "dsi1_phy",	0x0ae96400, 0x200 },
+	{ "dsi1_lane",	0x0ae96600, 0x280 },
+	{ "dsi1_pll",	0x0ae96900, 0x260 },
+	{ "mdp_top",	0x0ae01000, 0x45c },
+	{ "ctl0",	0x0ae02000, 0x1e0 },
+	{ "intf1",	0x0ae6b800, 0x2c0 },
+	{ "intf2",	0x0ae6c000, 0x2c0 },
+	{ "pp0",	0x0ae71000, 0xd4 },
+	{ "pp1",	0x0ae71800, 0xd4 },
+};
+
+/* Eight registers a line, lines of zeros left out */
+static void dsi_dump_all(const char *when)
+{
+	unsigned int r, off, i, n;
+	char line[8 * 9 + 1];
+
+	for (r = 0; r < ARRAY_SIZE(dsi_dump_regions); r++) {
+		const struct dsi_dump_region *reg = &dsi_dump_regions[r];
+		void __iomem *base = ioremap(reg->base, reg->len);
+
+		if (!base) {
+			pr_info("dsi_dump: %s: cannot map %s\n", when, reg->name);
+			continue;
+		}
+
+		for (off = 0; off < reg->len; off += 32) {
+			u32 val, any = 0;
+			int pos = 0;
+
+			n = min(8U, (reg->len - off) / 4);
+			for (i = 0; i < n; i++) {
+				val = readl(base + off + 4 * i);
+				any |= val;
+				pos += scnprintf(line + pos, sizeof(line) - pos,
+						 " %08x", val);
+			}
+			if (any)
+				pr_info("dsi_dump: %s %s+%03x:%s\n", when,
+					reg->name, off, line);
+		}
+		iounmap(base);
+	}
+}
+
+/* Linux's side, once the display is on: only while all of it is powered */
+static void dsi_dump_linux(void)
+{
+	static const char * const compats[] = {
+		"qcom,sm8150-dpu", "qcom,sm8150-dsi-ctrl",
+	};
+	struct device *held[3];
+	unsigned int c, n = 0;
+	struct device_node *np;
+
+	for (c = 0; c < ARRAY_SIZE(compats); c++) {
+		for_each_compatible_node(np, NULL, compats[c]) {
+			struct platform_device *pdev = of_find_device_by_node(np);
+
+			if (!pdev)
+				continue;
+			if (n == ARRAY_SIZE(held) ||
+			    pm_runtime_get_if_active(&pdev->dev) <= 0) {
+				put_device(&pdev->dev);
+				of_node_put(np);
+				pr_info("dsi_dump: display not powered, no dump\n");
+				goto out;
+			}
+			held[n++] = &pdev->dev;
+		}
+	}
+
+	if (n == ARRAY_SIZE(held))
+		dsi_dump_all("linux");
+	else
+		pr_info("dsi_dump: display devices missing, no dump\n");
+out:
+	while (n--) {
+		pm_runtime_put(held[n]);
+		put_device(held[n]);
+	}
+}
+
 static void te_probe_work_fn(struct work_struct *work);
 static DECLARE_DELAYED_WORK(te_probe_work, te_probe_work_fn);
 
@@ -665,6 +772,11 @@ static void te_probe_work_fn(struct work_struct *work)
 	struct device_node *np;
 	struct platform_device *pdev;
 	unsigned int i;
+
+	if (dsi_dump && te_probe_step == 0)
+		dsi_dump_linux();
+	if (!te_probe)
+		return;
 
 	np = of_find_compatible_node(NULL, NULL, "qcom,sm8150-dpu");
 	pdev = np ? of_find_device_by_node(np) : NULL;
@@ -712,7 +824,11 @@ static int __init gts6lwifi_diag_init(void)
 		schedule_delayed_work(&save_work, (unsigned long)save_every * HZ);
 	}
 
-	if (te_probe)
+	/* Before the display driver touches anything: the bootloader's setup */
+	if (dsi_dump)
+		dsi_dump_all("boot");
+
+	if (te_probe || dsi_dump)
 		schedule_delayed_work(&te_probe_work, te_probe_at_s[0] * HZ);
 
 	return 0;
